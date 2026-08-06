@@ -1,0 +1,29 @@
+# zhuCodeAgent 配置文件示例
+# 默认读取 ~/.zhu-code-agent/config.yml；
+# 可用 --config <path> 参数或环境变量 ZHU_CODE_AGENT_CONFIG 覆盖。
+# 复制本文件到默认位置后按需修改；至少保留一个 provider。
+
+providers:
+  # DeepSeek（OpenAI 兼容协议：protocol 用 openai + 自定义 base_url 即可，无需改代码）
+  - name: deepseek
+    protocol: openai
+    model: deepseek-chat              # deepseek-chat（通用）/ deepseek-reasoner（推理，见 README 说明）
+    base_url: https://api.deepseek.com
+    api_key: ${DEEPSEEK_API_KEY}      # 直接值 / ${ENV_VAR} 引用 / 留空回退到 OPENAI_API_KEY
+    thinking: false
+
+  # DeepSeek 的 Anthropic 兼容格式：thinking 灰字可直接展示（无需改代码）
+  - name: deepseek-anthropic
+    protocol: anthropic
+    model: deepseek-v4-pro            # deepseek-v4-pro / deepseek-v4-flash
+    base_url: https://api.deepseek.com/anthropic
+    api_key: ${DEEPSEEK_API_KEY}
+    thinking: true                    # 思考灰字实时展示（budget_tokens 被 DeepSeek 忽略）
+
+  # Anthropic Claude（需要 ANTHROPIC_API_KEY；暂无密钥时可先不配置这一项）
+  - name: claude
+    protocol: anthropic
+    model: claude-sonnet-4-5
+    base_url: https://api.anthropic.com
+    api_key: ${ANTHROPIC_API_KEY}
+    thinking: true                    # 启用 extended thinking（思考灰字展示）
