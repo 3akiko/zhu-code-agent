@@ -75,6 +75,15 @@ public class TerminalUi implements AutoCloseable {
         System.out.flush();
     }
 
+    /**
+     * 清除上一行（光标上移一行 + 清到行尾）。
+     * 用于流式开始后移除「⏳ 正在生成…」状态行（方案 A，不影响其他输出）。
+     */
+    public void clearPreviousLine() {
+        System.out.print("\u001b[1A\u001b[K");
+        System.out.flush();
+    }
+
     /** 清屏（不清历史，spec F8 /clear）：清屏 + 光标回左上角 */
     public void clearScreen() {
         System.out.print("\u001b[2J\u001b[H");

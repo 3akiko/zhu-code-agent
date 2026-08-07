@@ -217,14 +217,28 @@ public class ChatApp {
         ui.println("❯ " + userText, Ansi.USER);
         ui.println("⏳ 正在生成…", Ansi.THINKING);
 
+        // TODO(M2-ReAct): 状态行生命周期需按 agent 步骤重构——
+        //   ReAct 一轮用户输入会有多次 LLM 调用（think→tool_use→tool result→…），
+        //   每个步骤都要有自己的状态行（思考中/执行工具…），并在首内容到达时清除。
+        //   clearPreviousLine() 原语可复用，改动点在"打印/清除的粒度"（每轮一次 → 每步骤一次）。
+        // 方案 A：第一个流式内容（思考/正文）到达时清掉状态行；
+        // 结束时若仍无任何内容（如请求失败），也清掉，避免残留。
+        boolean[] statusCleared = {false};
+
         LlmClient client = LlmClientFactory.create(provider);
         TurnRunner.Result result = TurnRunner.run(client, conversation, userText, event -> {
+            if (event instanceof StreamEvent.TextDelta || event instanceof StreamEvent.ThinkingDelta) {
+                clearStatusLine(statusCleared);
+            }
             if (event instanceof StreamEvent.TextDelta td) {
                 ui.print(td.text(), null);           // 正文：正常颜色，到达即显示
             } else if (event instanceof StreamEvent.ThinkingDelta td) {
                 ui.print(td.text(), Ansi.THINKING);  // 思考：灰色小字
             }
         });
+
+        // 无任何内容输出（出错/超时等）：状态行仍可能残留，清掉
+        clearStatusLine(statusCleared);
 
         ui.println();
         if (result.error()) {
@@ -233,6 +247,14 @@ public class ChatApp {
             conversation.addAssistant(result.text(), result.thinking(), result.signature());
             ui.println("── 完成（" + result.stopReason()
                     + " · in " + result.inputTokens() + " / out " + result.outputTokens() + " tokens）", Ansi.THINKING);
+        }
+    }
+
+    /** 清除「正在生成」状态行（只清一次） */
+    private void clearStatusLine(boolean[] statusCleared) {
+        if (!statusCleared[0]) {
+            ui.clearPreviousLine();
+            statusCleared[0] = true;
         }
     }
 

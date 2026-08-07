@@ -16,6 +16,7 @@
 - 测试：57 个测试（配置/SSE 解析/双协议客户端/thinking 回传/会话存取/mock 端到端流式）。
 
 ### Changed
+- 流式状态行「⏳ 正在生成…」改为：第一个流式内容（思考/正文）到达时原地清除（ANSI 上移清行），出错无内容时也清除，避免残留（方案 A）。
 - 技术栈调整（用户批准）：弃用 Mordant（Kotlin-first、KMP metadata 包、Java 集成成本高），改为 JLine3 + 自研 ANSI 256 色助手。
 - Message 角色字符串改为 `Role` 枚举（JSON 仍为小写 user/assistant）。
 
@@ -30,6 +31,7 @@
 - JLinePicker 选择「新建对话」时 `Optional.of(null)` 抛 NullPointerException：改为返回下标（`pickIndex`），「新建对话」= 下标 0 为合法选择，Ctrl+C 返回 empty，二者不再混淆（2026-08-07 真实使用中发现并修复）。
 
 ### Changed
+- 流式状态行「⏳ 正在生成…」改为：第一个流式内容（思考/正文）到达时原地清除（ANSI 上移清行），出错无内容时也清除，避免残留（方案 A）。
 - 会话选择列表的时间改为本地时区显示（MM-dd HH:mm），此前显示 UTC ISO 时间。
 
 ### Docs
