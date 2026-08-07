@@ -7,7 +7,7 @@ package com.zhubao.tui;
 public final class SlashCommands {
 
     /** 命令处理结果 */
-    public enum Action { NONE, HELP, EXIT, CLEAR, NEW }
+    public enum Action { NONE, HELP, EXIT, CLEAR, NEW, PERMISSIONS }
 
     private SlashCommands() {
     }
@@ -27,6 +27,7 @@ public final class SlashCommands {
             case "/exit", "/quit" -> Action.EXIT;
             case "/clear" -> Action.CLEAR;
             case "/new" -> Action.NEW;
+            case "/permissions" -> Action.PERMISSIONS;
             default -> Action.NONE;
         };
     }

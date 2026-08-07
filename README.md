@@ -2,9 +2,9 @@
 
 用 Java 从零实现的一个命令行 Coding Agent（对标 Claude Code / Codex），用于学习 agent 核心机制与 agent 开发面试。
 
-> **状态：M1 已完成**（聊天 TUI + 会话持久化）。里程碑规划见 [docs/roadmap.md](docs/roadmap.md)。
+> **状态：M2 已完成**（Agent 循环与 Tool Use：6 个内置工具 + 权限确认 + 安全边界，2026-08-08）。里程碑规划见 [docs/roadmap.md](docs/roadmap.md)。
 
-## 当前功能（M1）
+## 当前功能（M2）
 
 - 彩色终端 TUI（JLine3 + ANSI 256 色：用户青色 / 思考灰色 / 错误红色 / 状态绿色）
 - 启动流程：有历史会话先显示「新建对话 + 历史会话列表」，多 provider 显示选择列表，单 provider 直进聊天
@@ -14,6 +14,11 @@
 - 双后端：Anthropic Claude（含 extended thinking，思考灰字实时展示、正文正常颜色、signature 多轮回传）/ OpenAI（**DeepSeek 等 OpenAI 兼容服务可直接用：`protocol: openai` + 自定义 `base_url`**）
 - 基础命令：`/help` `/clear` `/new`（保存当前并开新会话）`/exit`（退出前保存会话）
 - 统一 Provider 抽象：新增后端只需新增一个实现类 + 工厂分支，调用方不变
+- **Agent 循环（ReAct）**：模型输出工具调用 → 权限确认 → 执行 → 结果回填 → 循环直到 end_turn；同一消息多个工具调用串行执行、一次性回填
+- **内置 6 工具**：`read_file`（支持 offset/limit 行范围）/ `write_file` / `edit_file`（精确字符串替换，唯一匹配）/ `bash`（cwd、无 stdin、30s 超时、200KB 输出截断）/ `grep` / `glob`
+- **权限确认**：只读工具自动放行；写类/bash 行内确认（允许 a / 拒绝 d / 总是允许本次 s）；「总是允许」按工具+参数精确记忆、程序运行内有效、不落盘、退出重置；`/permissions` 查看与重置
+- **安全边界**：路径以工作区为根（realpath 含符号链接校验），越界/写 `.git/` 与 `~/.zhu-code-agent/` 拒绝；`rm -rf` 等危险命令即使曾「总是允许」也强制确认，且目标必须位于工作区内
+- **循环护栏**：单轮工具调用上限（`tool.max_calls_per_turn`，默认 60）+ 每步流空闲超时 120s + 结果预览行数可配（`ui.tool_preview_lines`，默认 5）
 
 ## 构建与运行
 

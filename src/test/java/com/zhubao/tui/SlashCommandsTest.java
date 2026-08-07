@@ -13,6 +13,7 @@ class SlashCommandsTest {
         assertEquals(SlashCommands.Action.EXIT, SlashCommands.parse("/quit"));
         assertEquals(SlashCommands.Action.CLEAR, SlashCommands.parse("/clear"));
         assertEquals(SlashCommands.Action.NEW, SlashCommands.parse("/new"));
+        assertEquals(SlashCommands.Action.PERMISSIONS, SlashCommands.parse("/permissions"));
         assertEquals(SlashCommands.Action.HELP, SlashCommands.parse("  /HELP  "));
     }
 
@@ -29,6 +30,7 @@ class SlashCommandsTest {
         assertTrue(SlashCommands.isCommand("/help"));
         assertTrue(SlashCommands.isCommand("/exit"));
         assertTrue(SlashCommands.isCommand("/new"));
+        assertTrue(SlashCommands.isCommand("/permissions"));
         assertFalse(SlashCommands.isCommand("/"));
         assertFalse(SlashCommands.isCommand("hello /exit"));
         assertFalse(SlashCommands.isCommand(null));

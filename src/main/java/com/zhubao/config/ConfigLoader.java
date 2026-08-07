@@ -108,7 +108,29 @@ public class ConfigLoader {
         Path sessionsDir = sessionsNode instanceof String s && !s.isBlank()
                 ? Path.of(s)
                 : AppConfig.defaultSessionsDir();
-        return new AppConfig(List.copyOf(providers), sessionsDir);
+
+        int toolMaxCalls = nestedInt(map, "tool", "max_calls_per_turn", AppConfig.DEFAULT_TOOL_MAX_CALLS_PER_TURN);
+        int uiPreviewLines = nestedInt(map, "ui", "tool_preview_lines", AppConfig.DEFAULT_UI_TOOL_PREVIEW_LINES);
+        return new AppConfig(List.copyOf(providers), sessionsDir, toolMaxCalls, uiPreviewLines);
+    }
+
+    /** 读取嵌套映射中的整数（如 tool.max_calls_per_turn）；缺失/非正整数 → 默认值 */
+    @SuppressWarnings("unchecked")
+    private static int nestedInt(Map<?, ?> root, String section, String key, int def) {
+        Object node = root.get(section);
+        if (!(node instanceof Map<?, ?> sectionMap)) {
+            return def;
+        }
+        Object raw = sectionMap.get(key);
+        if (raw == null) {
+            return def;
+        }
+        try {
+            int v = Integer.parseInt(String.valueOf(raw));
+            return v > 0 ? v : def;
+        } catch (NumberFormatException e) {
+            return def;
+        }
     }
 
     /** 单项 YAML → ProviderConfig（含 api_key 解析与字段校验） */

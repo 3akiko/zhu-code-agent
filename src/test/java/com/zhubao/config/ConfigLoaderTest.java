@@ -203,4 +203,50 @@ class ConfigLoaderTest {
         assertTrue(dir.toString().contains(".zhu-code-agent"));
         assertTrue(dir.endsWith("sessions"));
     }
+
+    // ── M2：tool.max_calls_per_turn / ui.tool_preview_lines ──────────────
+
+    @Test
+    void toolAndUiDefaultsApplied() throws Exception {
+        Path p = writeConfig("""
+                providers:
+                  - name: openai
+                    protocol: openai
+                    model: gpt-4o
+                """);
+        AppConfig cfg = ConfigLoader.load(p.toString(), Map.of());
+        assertEquals(AppConfig.DEFAULT_TOOL_MAX_CALLS_PER_TURN, cfg.toolMaxCallsPerTurn());
+        assertEquals(AppConfig.DEFAULT_UI_TOOL_PREVIEW_LINES, cfg.uiToolPreviewLines());
+    }
+
+    @Test
+    void toolAndUiCustomValuesBound() throws Exception {
+        Path p = writeConfig("""
+                providers:
+                  - name: openai
+                    protocol: openai
+                    model: gpt-4o
+                tool:
+                  max_calls_per_turn: 30
+                ui:
+                  tool_preview_lines: 8
+                """);
+        AppConfig cfg = ConfigLoader.load(p.toString(), Map.of());
+        assertEquals(30, cfg.toolMaxCallsPerTurn());
+        assertEquals(8, cfg.uiToolPreviewLines());
+    }
+
+    @Test
+    void invalidToolValueFallsBackToDefault() throws Exception {
+        Path p = writeConfig("""
+                providers:
+                  - name: openai
+                    protocol: openai
+                    model: gpt-4o
+                tool:
+                  max_calls_per_turn: -5
+                """);
+        AppConfig cfg = ConfigLoader.load(p.toString(), Map.of());
+        assertEquals(AppConfig.DEFAULT_TOOL_MAX_CALLS_PER_TURN, cfg.toolMaxCallsPerTurn());
+    }
 }

@@ -76,9 +76,26 @@ public class TerminalUi implements AutoCloseable {
     }
 
     /**
-     * 清除上一行（光标上移一行 + 清到行尾）。
-     * 用于流式开始后移除「⏳ 正在生成…」状态行（方案 A，不影响其他输出）。
+     * 读取权限确认键（spec F3）：输入 a/d/s 后回车确认。
+     * 采用 readLine 而非 raw 单键：raw 单键依赖终端原始模式（tcsetattr），
+     * 在部分 PTY/受限终端下不可靠（实测 macOS 受限 PTY 上行缓冲不生效），
+     * 回车确认保证跨环境稳定；无输入/异常默认返回 'd'（安全优先：拒绝）。
      */
+    public char readSingleKey(String prompt) {
+        String line;
+        try {
+            line = lineReader.readLine(Ansi.color(prompt, Ansi.HIGHLIGHT));
+        } catch (org.jline.reader.EndOfFileException | org.jline.reader.UserInterruptException e) {
+            return 'd';
+        }
+        if (line == null || line.isBlank()) {
+            return 'd';
+        }
+        return line.trim().charAt(0);
+    }
+
+    /** 清除上一行（光标上移一行 + 清到行尾）。
+     * 用于流式开始后移除状态行（不影响其他输出）。 */
     public void clearPreviousLine() {
         System.out.print("\u001b[1A\u001b[K");
         System.out.flush();

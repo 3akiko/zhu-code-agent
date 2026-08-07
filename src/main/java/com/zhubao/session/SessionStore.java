@@ -5,6 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
+import com.zhubao.conversation.ContentBlock;
+import com.zhubao.conversation.Message;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -77,18 +80,51 @@ public class SessionStore {
         }
     }
 
-    /** 保存会话：原子写（tmp + rename） */
+    /** 单条 tool_result 落盘上限（spec F9）：超出截断并标注；内存仍保留完整结果 */
+    public static final int TOOL_RESULT_PERSIST_CAP = 64 * 1024;
+
+    /** 保存会话：原子写（tmp + rename）；tool_result 超限截断后再落盘 */
     public void save(Session session) {
         ensureDir();
         String id = session.getMeta().id();
         Path target = sessionsDir.resolve(id + ".json");
         Path tmp = sessionsDir.resolve(id + ".json.tmp");
         try {
-            mapper.writeValue(tmp.toFile(), session);
+            mapper.writeValue(tmp.toFile(), truncateToolResults(session));
             Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
             throw new SessionException("保存会话失败: " + e.getMessage(), e);
         }
+    }
+
+    /** 深拷贝会话并把超限的 tool_result 输出截断（仅落盘视图，不改内存对象） */
+    static Session truncateToolResults(Session session) {
+        List<Message> messages = session.getMessages();
+        List<Message> out = new ArrayList<>(messages.size());
+        boolean changed = false;
+        for (Message m : messages) {
+            List<ContentBlock> blocks = m.getBlocks();
+            List<ContentBlock> newBlocks = null;
+            for (int i = 0; i < blocks.size(); i++) {
+                ContentBlock b = blocks.get(i);
+                if (b instanceof ContentBlock.ToolResultBlock tr
+                        && tr.output() != null && tr.output().length() > TOOL_RESULT_PERSIST_CAP) {
+                    if (newBlocks == null) {
+                        newBlocks = new ArrayList<>(blocks);
+                    }
+                    String truncated = tr.output().substring(0, TOOL_RESULT_PERSIST_CAP)
+                            + "\n…（已截断，共 " + tr.output().length() + " 字节）";
+                    newBlocks.set(i, new ContentBlock.ToolResultBlock(tr.id(), tr.name(), tr.isError(), truncated));
+                    changed = true;
+                }
+            }
+            if (newBlocks != null) {
+                out.add(new Message(m.getRole(), newBlocks, m.getThinking(), m.getThinkingSignature()));
+            } else {
+                out.add(m);
+            }
+        }
+        return changed ? new Session(session.getMeta(), out) : session;
     }
 
     private void ensureDir() {

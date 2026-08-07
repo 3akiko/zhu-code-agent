@@ -1,33 +1,46 @@
 package com.zhubao.tui;
 
+import com.zhubao.agent.AgentRunner;
+import com.zhubao.agent.AgentUi;
 import com.zhubao.config.AppConfig;
 import com.zhubao.config.ProviderConfig;
 import com.zhubao.conversation.Conversation;
 import com.zhubao.llm.LlmClient;
 import com.zhubao.llm.LlmClientFactory;
 import com.zhubao.llm.StreamEvent;
+import com.zhubao.llm.ToolSpec;
+import com.zhubao.permission.PermissionChoice;
+import com.zhubao.permission.PermissionManager;
 import com.zhubao.session.ProviderSnapshot;
 import com.zhubao.session.Session;
 import com.zhubao.session.SessionMeta;
 import com.zhubao.session.SessionStore;
+import com.zhubao.tool.PathGuard;
+import com.zhubao.tool.SerialToolExecutor;
+import com.zhubao.tool.ToolCall;
+import com.zhubao.tool.ToolRegistry;
+import com.zhubao.tool.ToolResult;
 
+import java.nio.file.Path;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
- * TUI 状态机与主循环（spec F1/F3/F8/F9）：
+ * TUI 状态机与主循环（spec F1/F3/F8/F9 + M2）：
  *
  * <pre>
  * SESSION_SELECT（有历史时：新建对话 + 历史会话列表）
  *   → PROVIDER_SELECT（新建且多 provider 时）
- *   → CHAT（输入 → TurnRunner 流式渲染 → 会话落盘）
+ *   → CHAT（输入 → AgentRunner 循环（含工具执行/权限确认）→ 会话落盘）
  * </pre>
  *
  * 保存时机：每轮回复完成后 + /exit 退出前（spec F9）。
+ * M2：工具执行器与权限管理器为程序运行级（「总是允许」不落盘、退出重置，spec F3）。
  */
 public class ChatApp {
 
@@ -35,6 +48,11 @@ public class ChatApp {
     private final SessionStore sessionStore;
     private final TerminalUi ui;
     private final JLinePicker picker;
+
+    private final ToolRegistry toolRegistry;
+    private final PermissionManager permissionManager;
+    private final SerialToolExecutor toolExecutor;
+    private final List<ToolSpec> toolSpecs;
 
     private ProviderConfig provider;          // 当前 provider（含 api_key，仅内存，不落盘）
     private ProviderSnapshot providerSnapshot; // 会话记录的 provider 快照（不含 api_key）
@@ -46,6 +64,14 @@ public class ChatApp {
         this.sessionStore = new SessionStore(config.sessionsDir());
         this.ui = new TerminalUi();
         this.picker = new JLinePicker(ui);
+        // M2：工具注册表 / 权限管理器为程序运行级（权限不落盘、退出重置）
+        Path workspace = Path.of(System.getProperty("user.dir"));
+        this.toolRegistry = new ToolRegistry(new PathGuard(workspace));
+        this.permissionManager = new PermissionManager(toolRegistry);
+        this.toolExecutor = new SerialToolExecutor(toolRegistry, permissionManager, null, config.uiToolPreviewLines());
+        this.toolSpecs = toolRegistry.all().stream()
+                .map(t -> new ToolSpec(t.name(), t.description(), t.inputSchema()))
+                .toList();
     }
 
     public void run() {
@@ -187,9 +213,29 @@ public class ChatApp {
                     ui.println("已取消新建，继续当前会话", Ansi.THINKING);
                 }
             }
+            case PERMISSIONS -> handlePermissions(line);
             case NONE -> ui.println("⚠ 未知命令，输入 /help 查看帮助", Ansi.ERROR);
         }
         return true;
+    }
+
+    /** /permissions：查看/重置「总是允许」清单（spec F5，仅内存、退出重置） */
+    private void handlePermissions(String line) {
+        if (line.trim().toLowerCase().endsWith("reset")) {
+            permissionManager.reset();
+            ui.println("✔ 已清空「总是允许」清单", Ansi.STATUS);
+            return;
+        }
+        List<String> list = permissionManager.allowedList();
+        if (list.isEmpty()) {
+            ui.println("「总是允许」清单为空（本次程序运行内未记忆任何放行）", Ansi.THINKING);
+        } else {
+            ui.println("「总是允许」清单（本次程序运行内有效，不落盘）：", Ansi.HIGHLIGHT);
+            for (String item : list) {
+                ui.println("  " + item, Ansi.THINKING);
+            }
+            ui.println("使用 /permissions reset 清空", Ansi.THINKING);
+        }
     }
 
     /** /new：保存当前会话 → 开新会话（多 provider 时重新选择；取消则恢复原会话） */
@@ -212,49 +258,141 @@ public class ChatApp {
         return true;
     }
 
-    /** 发送用户消息并流式渲染回复（spec F3/F7） */
+    /** 发送用户消息并运行 agent 循环（spec F1/F3/F7/F10） */
     private void sendAndRender(String userText) {
         ui.println("❯ " + userText, Ansi.USER);
-        ui.println("⏳ 正在生成…", Ansi.THINKING);
-
-        // TODO(M2-ReAct): 状态行生命周期需按 agent 步骤重构——
-        //   ReAct 一轮用户输入会有多次 LLM 调用（think→tool_use→tool result→…），
-        //   每个步骤都要有自己的状态行（思考中/执行工具…），并在首内容到达时清除。
-        //   clearPreviousLine() 原语可复用，改动点在"打印/清除的粒度"（每轮一次 → 每步骤一次）。
-        // 方案 A：第一个流式内容（思考/正文）到达时清掉状态行；
-        // 结束时若仍无任何内容（如请求失败），也清掉，避免残留。
-        boolean[] statusCleared = {false};
 
         LlmClient client = LlmClientFactory.create(provider);
-        TurnRunner.Result result = TurnRunner.run(client, conversation, userText, event -> {
-            if (event instanceof StreamEvent.TextDelta || event instanceof StreamEvent.ThinkingDelta) {
-                clearStatusLine(statusCleared);
-            }
-            if (event instanceof StreamEvent.TextDelta td) {
-                ui.print(td.text(), null);           // 正文：正常颜色，到达即显示
-            } else if (event instanceof StreamEvent.ThinkingDelta td) {
-                ui.print(td.text(), Ansi.THINKING);  // 思考：灰色小字
-            }
-        });
+        TuiAgentUi agentUi = new TuiAgentUi();
+        SerialToolExecutor executor = new SerialToolExecutor(toolRegistry, permissionManager, agentUi,
+                config.uiToolPreviewLines());
 
-        // 无任何内容输出（出错/超时等）：状态行仍可能残留，清掉
-        clearStatusLine(statusCleared);
+        AgentRunner.Result result = AgentRunner.run(client, conversation, userText,
+                toolSpecs, executor, agentUi, config.toolMaxCallsPerTurn());
 
+        // 清掉可能残留的步骤状态行
+        agentUi.clearLeftoverStatus();
         ui.println();
-        if (result.error()) {
+
+        if (result.limitReached()) {
+            ui.println("⚠ 已达本轮工具调用上限（" + config.toolMaxCallsPerTurn()
+                    + "），输入『继续』可开启新一轮", Ansi.ERROR);
+        } else if (result.error()) {
             ui.println("⚠ " + result.errorMessage(), Ansi.ERROR);
         } else {
-            conversation.addAssistant(result.text(), result.thinking(), result.signature());
             ui.println("── 完成（" + result.stopReason()
                     + " · in " + result.inputTokens() + " / out " + result.outputTokens() + " tokens）", Ansi.THINKING);
         }
     }
 
-    /** 清除「正在生成」状态行（只清一次） */
-    private void clearStatusLine(boolean[] statusCleared) {
-        if (!statusCleared[0]) {
-            ui.clearPreviousLine();
-            statusCleared[0] = true;
+    /** Agent 循环的 TUI 回调（spec F10：每步状态行/工具摘要/结果预览/行内权限确认） */
+    private final class TuiAgentUi implements AgentUi {
+
+        private boolean stepStatusCleared;
+
+        @Override
+        public void onStep(String status) {
+            stepStatusCleared = false;
+            ui.println(status, Ansi.THINKING);
+        }
+
+        @Override
+        public void onEvent(StreamEvent event) {
+            if (event instanceof StreamEvent.TextDelta td) {
+                clearStepStatus();
+                ui.print(td.text(), null);
+            } else if (event instanceof StreamEvent.ThinkingDelta td) {
+                clearStepStatus();
+                ui.print(td.text(), Ansi.THINKING);
+            }
+        }
+
+        @Override
+        public void onToolCall(ToolCall call) {
+            clearStepStatus();
+            ui.println("🔧 " + toolSummary(call), Ansi.HIGHLIGHT);
+        }
+
+        @Override
+        public void onToolResult(ToolResult result, int previewLines) {
+            ui.println(resultPreview(result, previewLines), Ansi.THINKING);
+        }
+
+        @Override
+        public PermissionChoice askPermission(ToolCall call) {
+            String prompt = "[权限] " + toolSummary(call) + " → 允许(a) / 拒绝(d) / 总是允许本次(s)？(输入后回车)";
+            while (true) {
+                char c = ui.readSingleKey(prompt + " ");
+                switch (Character.toLowerCase(c)) {
+                    case 'a' -> {
+                        return PermissionChoice.ALLOW;
+                    }
+                    case 'd' -> {
+                        return PermissionChoice.DENY;
+                    }
+                    case 's' -> {
+                        return PermissionChoice.ALLOW_ALWAYS;
+                    }
+                    default -> ui.println("（请按 a/d/s）", Ansi.THINKING);
+                }
+            }
+        }
+
+        void clearLeftoverStatus() {
+            if (!stepStatusCleared) {
+                ui.clearPreviousLine();
+                stepStatusCleared = true;
+            }
+        }
+
+        private void clearStepStatus() {
+            if (!stepStatusCleared) {
+                ui.clearPreviousLine();
+                stepStatusCleared = true;
+            }
+        }
+
+        /** 工具调用一行摘要（spec F10） */
+        private String toolSummary(ToolCall call) {
+            Map<String, Object> args = call.arguments();
+            if ("bash".equals(call.name())) {
+                return "bash " + args.getOrDefault("command", "");
+            }
+            for (String key : new String[]{"path", "pattern"}) {
+                if (args.containsKey(key)) {
+                    return call.name() + " " + args.get(key);
+                }
+            }
+            String json = call.argumentsJson();
+            return call.name() + (json == null || json.isBlank() ? "" : " " + truncate(json, 80));
+        }
+
+        /** 工具结果预览：前 previewLines 行 + 截断标注（spec F10） */
+        private String resultPreview(ToolResult result, int previewLines) {
+            String head = result.isError() ? "⚠ " : "└ ";
+            return head + result.name() + " → " + firstLines(result.output(), previewLines);
+        }
+
+        private String firstLines(String text, int n) {
+            if (text == null) {
+                return "";
+            }
+            String[] lines = text.split("\n", -1);
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < Math.min(lines.length, Math.max(0, n)); i++) {
+                if (sb.length() > 0) {
+                    sb.append('\n');
+                }
+                sb.append(lines[i]);
+            }
+            if (lines.length > n) {
+                sb.append("\n…已截断，共 ").append(lines.length).append(" 行");
+            }
+            return sb.toString();
+        }
+
+        private String truncate(String text, int max) {
+            return text.length() <= max ? text : text.substring(0, max) + "…";
         }
     }
 
@@ -275,17 +413,18 @@ public class ChatApp {
     }
 
     private void printBanner() {
-        ui.println("zhuCodeAgent v0.1.0 —— 命令行 Coding Agent", Ansi.HIGHLIGHT);
+        ui.println("zhuCodeAgent v0.2.0 —— 命令行 Coding Agent（M2：Agent 循环与 Tool Use）", Ansi.HIGHLIGHT);
         ui.println("Provider: " + provider.getName() + " · " + provider.getProtocol() + " · " + provider.getModel()
                 + "　输入 /help 查看帮助", Ansi.STATUS);
     }
 
     private void printHelp() {
         ui.println("可用命令：", Ansi.HIGHLIGHT);
-        ui.println("  /help  显示帮助与当前 provider/model");
-        ui.println("  /clear 清屏（保留会话历史）");
-        ui.println("  /new   保存当前会话并新建一个会话");
-        ui.println("  /exit  退出并保存会话");
+        ui.println("  /help         显示帮助与当前 provider/model");
+        ui.println("  /clear        清屏（保留会话历史）");
+        ui.println("  /new          保存当前会话并新建一个会话");
+        ui.println("  /permissions  查看「总是允许」清单（/permissions reset 清空）");
+        ui.println("  /exit         退出并保存会话");
         ui.println("当前： " + provider.getName() + " · " + provider.getModel());
     }
 }

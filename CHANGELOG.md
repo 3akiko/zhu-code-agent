@@ -4,6 +4,29 @@
 
 ## [Unreleased]
 
+### Added（M2：Agent 循环与 Tool Use，2026-08-08）
+- Agent 循环（ReAct）：模型输出工具调用 → 权限确认 → 执行 → 结果回填 → 循环直到 end_turn；同一 assistant 消息的多个工具调用串行执行、一次性回填。
+- 内置 6 工具：`read_file`（支持 offset/limit 行范围）、`write_file`、`edit_file`（精确字符串替换，唯一匹配）、`bash`（cwd、无 stdin、30s 超时、200KB 输出截断）、`grep`、`glob`。
+- 权限确认：只读自动放行；写类/bash 行内确认（允许 a / 拒绝 d / 总是允许本次 s）；「总是允许」按工具+参数精确记忆、程序运行内有效、不落盘、退出重置；`/permissions` 查看与 reset；危险命令（rm -rf 等）即使曾「总是允许」也强制确认，且目标必须在工作区内。
+- 安全边界：`PathGuard`（cwd 为根、realpath 含符号链接校验、禁写 `.git/` 与 `~/.zhu-code-agent/`）、`DangerGuard`（危险命令清单 + rm -rf 路径校验）。
+- 双协议工具调用：anthropic `tool_use` / openai `function_call` 收敛为统一 `StreamEvent.ToolCall`；请求体携带 tools 定义；tool_result 按协议回传（anthropic 内嵌 user 消息 / openai role=tool 消息）。
+- 会话持久化扩展：消息内容块化（text/tool_use/tool_result），tool_result 单条落盘上限 64KB（截断标注，内存完整），旧 M1 会话自动迁移。
+- 循环护栏：单轮工具调用上限 `tool.max_calls_per_turn`（默认 60，触发停止并提示可继续）；每步流空闲超时 120s（宽容长思考）；`ui.tool_preview_lines` 结果预览行数可配（默认 5）。
+- 执行器解耦：`ToolExecutor` 接口 + `SerialToolExecutor`（M2 唯一实现，M5 并行扩展点）。
+- 测试：119 个（守卫/工具/权限/循环/双协议工具解析/会话迁移/mock LLM 端到端工具闭环/真机冒烟）。
+
+### Fixed（M2）
+- `BashTool` 大输出死锁：输出超过管道缓冲区（~64KB）时先 waitFor 后读输出导致子进程写满阻塞假超时 → 独立线程边读边等。
+- 权限确认 raw 单键在受限 PTY 不生效（tcsetattr 未切换原始模式）→ 改为「输入 a/d/s 回车确认」（变更控制，spec F3/AC3 已记录）。
+- `PathGuard` 根目录与候选路径统一 realpath 比较，规避 macOS /var↔/private/var 符号链接误判越界。
+
+### Changed（M2）
+- `TurnRunner` 演进为 `agent/AgentRunner`（消息循环与 TUI 解耦）；`Message` 内容块化（向后兼容加载旧会话）。
+- 状态行粒度：每 agent 步骤一条（⏳ 思考中… / 🔧 执行工具…），首内容到达清除。
+
+### Docs（M2）
+- M2 四文档（spec/plan/task/checklist）已批准并归档至 `docs/milestones/m2/`；验收报告 `docs/验收报告-M2.md`。
+
 ### Added（M1：聊天 TUI + 会话持久化）
 - 彩色终端 TUI：JLine3 行编辑/输入历史 + ANSI 256 色渲染（用户青/思考灰/错误红/状态绿）。
 - 启动状态机：会话选择（新建 + 历史恢复）→ Provider 选择（多 provider 时）→ 聊天。

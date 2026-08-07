@@ -10,7 +10,7 @@ package com.zhubao.llm;
  *   <li>出错：只发 {@link Error}（不保证有 StreamEnd）</li>
  * </ul>
  *
- * M1 不含 ToolCall 事件（M2 再扩展）。
+ * M1 不含 ToolCall 事件；M2 新增 ToolCall 事件（工具调用声明）。
  */
 public sealed interface StreamEvent {
 
@@ -22,6 +22,12 @@ public sealed interface StreamEvent {
 
     /** 思考结束（Anthropic 携带 signature，供多轮回传） */
     record ThinkingComplete(String signature) implements StreamEvent {}
+
+    /**
+     * 工具调用声明（M2，spec F8）：anthropic tool_use / openai function_call 统一收敛。
+     * argumentsJson 为完整的参数 JSON 字符串（由客户端累积拼接）。
+     */
+    record ToolCall(String id, String name, String argumentsJson) implements StreamEvent {}
 
     /** 流式结束：stop_reason + token 用量 */
     record StreamEnd(String stopReason, int inputTokens, int outputTokens) implements StreamEvent {}

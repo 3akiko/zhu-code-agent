@@ -131,4 +131,60 @@ class SessionStoreTest {
         String id = SessionMeta.newId();
         assertTrue(id.matches("\\d{8}-\\d{6}-[0-9a-f]{1,4}"), "id 格式不符: " + id);
     }
+
+    // ── M2：工具消息落盘 / 64KB 截断 / 旧格式迁移 ─────────────────────────
+
+    @Test
+    void toolMessagesRoundTrip() throws Exception {
+        SessionStore store = new SessionStore(tmp);
+        Session s = newSession("t1", Instant.parse("2026-08-07T10:00:00Z"),
+                new Message(Role.USER, "读文件"),
+                new Message(Role.ASSISTANT, java.util.List.of(
+                        new com.zhubao.conversation.ContentBlock.ToolUseBlock("tu1", "read_file", "{\"path\":\"a.txt\"}")),
+                        null, null),
+                new Message(Role.USER, java.util.List.of(
+                        new com.zhubao.conversation.ContentBlock.ToolResultBlock("tu1", "read_file", false, "内容")),
+                        null, null));
+        store.save(s);
+
+        Session loaded = store.load("t1").orElseThrow();
+        Message assistant = loaded.getMessages().get(1);
+        Message result = loaded.getMessages().get(2);
+        assertEquals(1, assistant.getBlocks().size());
+        assertEquals("tu1", ((com.zhubao.conversation.ContentBlock.ToolUseBlock) assistant.getBlocks().get(0)).id());
+        assertEquals("内容", ((com.zhubao.conversation.ContentBlock.ToolResultBlock) result.getBlocks().get(0)).output());
+    }
+
+    @Test
+    void toolResultTruncatedAt64KOnSave() throws Exception {
+        SessionStore store = new SessionStore(tmp);
+        String big = "x".repeat(70_000);
+        Session s = newSession("t2", Instant.parse("2026-08-07T10:00:00Z"),
+                new Message(Role.USER, java.util.List.of(
+                        new com.zhubao.conversation.ContentBlock.ToolResultBlock("tu1", "bash", false, big)), null, null));
+        store.save(s);
+
+        Session loaded = store.load("t2").orElseThrow();
+        String output = ((com.zhubao.conversation.ContentBlock.ToolResultBlock) loaded.getMessages().get(0).getBlocks().get(0)).output();
+        assertTrue(output.length() <= SessionStore.TOOL_RESULT_PERSIST_CAP + 40, "落盘结果应被截断，实际长度 " + output.length());
+        assertTrue(output.contains("已截断"));
+        String original = ((com.zhubao.conversation.ContentBlock.ToolResultBlock) s.getMessages().get(0).getBlocks().get(0)).output();
+        assertEquals(70_000, original.length());
+    }
+
+    @Test
+    void legacyStringContentMigratedToTextBlock() throws Exception {
+        SessionStore store = new SessionStore(tmp);
+        String oldJson = """
+                {"meta":{"id":"old1","createdAt":"2026-08-07T10:00:00Z","updatedAt":"2026-08-07T10:00:00Z","title":"旧会话","messageCount":1,"provider":{"name":"claude","protocol":"anthropic","model":"claude-sonnet-4-5","baseUrl":"https://api.anthropic.com"}},"messages":[{"role":"user","content":"旧问题"}]}
+                """;
+        Files.writeString(tmp.resolve("old1.json"), oldJson);
+
+        Session loaded = store.load("old1").orElseThrow();
+        assertEquals(1, loaded.getMessages().size());
+        assertEquals("旧问题", loaded.getMessages().get(0).getContent());
+        assertEquals(1, loaded.getMessages().get(0).getBlocks().size());
+        assertInstanceOf(com.zhubao.conversation.ContentBlock.TextBlock.class,
+                loaded.getMessages().get(0).getBlocks().get(0));
+    }
 }

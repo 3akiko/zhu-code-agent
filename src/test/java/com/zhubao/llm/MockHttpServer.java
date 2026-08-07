@@ -43,7 +43,17 @@ public class MockHttpServer implements AutoCloseable {
         return "http://localhost:" + server.getAddress().getPort();
     }
 
-    public String lastRequestBody() {
+    /**
+     * 最近一次请求体；若请求尚未到达则轮询等待（消除全量测试下的偶发竞态）。
+     */
+    public String lastRequestBody() throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 3000;
+        while (capturedBodies.isEmpty()) {
+            if (System.currentTimeMillis() > deadline) {
+                throw new IllegalStateException("mock 服务器未捕获到请求体");
+            }
+            Thread.sleep(10);
+        }
         return capturedBodies.get(capturedBodies.size() - 1);
     }
 

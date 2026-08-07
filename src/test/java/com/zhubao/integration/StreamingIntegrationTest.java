@@ -1,16 +1,26 @@
 package com.zhubao.integration;
 
+import com.zhubao.agent.AgentRunner;
+import com.zhubao.agent.AgentUi;
 import com.zhubao.config.ProviderConfig;
 import com.zhubao.conversation.Conversation;
 import com.zhubao.conversation.Message;
 import com.zhubao.conversation.Role;
+import com.zhubao.llm.LlmClient;
 import com.zhubao.llm.LlmClientFactory;
 import com.zhubao.llm.MockHttpServer;
 import com.zhubao.llm.StreamEvent;
+import com.zhubao.llm.ToolSpec;
+import com.zhubao.permission.PermissionChoice;
+import com.zhubao.permission.PermissionManager;
 import com.zhubao.session.Session;
 import com.zhubao.session.SessionMeta;
 import com.zhubao.session.SessionStore;
-import com.zhubao.tui.TurnRunner;
+import com.zhubao.tool.PathGuard;
+import com.zhubao.tool.SerialToolExecutor;
+import com.zhubao.tool.ToolCall;
+import com.zhubao.tool.ToolRegistry;
+import com.zhubao.tool.ToolResult;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -23,13 +33,52 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * 端到端集成测试（spec AC10 / checklist E1）：
- * mock LLM 服务器 + 真实 LlmClient + TurnRunner + SessionStore，
+ * mock LLM 服务器 + 真实 LlmClient + AgentRunner（工具循环）+ SessionStore，
  * 覆盖「流式回复 → 多轮 → 会话落盘/恢复」全链路，无需真实密钥。
+ * M2：TurnRunner 已演进为 AgentRunner（T10），原 4 项能力迁移至此。
  */
 class StreamingIntegrationTest {
 
     @TempDir
     Path tmp;
+
+    /** 测试用 UI：自动允许权限、收集增量事件 */
+    private static final class NoopUi implements AgentUi {
+        final List<StreamEvent> events = new ArrayList<>();
+
+        @Override
+        public void onStep(String status) {
+        }
+
+        @Override
+        public void onEvent(StreamEvent event) {
+            events.add(event);
+        }
+
+        @Override
+        public void onToolCall(ToolCall call) {
+        }
+
+        @Override
+        public void onToolResult(ToolResult result, int previewLines) {
+        }
+
+        @Override
+        public PermissionChoice askPermission(ToolCall call) {
+            return PermissionChoice.ALLOW;
+        }
+    }
+
+    /** 在临时工作区运行一轮 agent 循环 */
+    private AgentRunner.Result run(LlmClient client, Conversation conversation, String userText, NoopUi ui) {
+        ToolRegistry registry = new ToolRegistry(new PathGuard(tmp));
+        PermissionManager pm = new PermissionManager(registry);
+        SerialToolExecutor executor = new SerialToolExecutor(registry, pm, ui, 5);
+        List<ToolSpec> specs = registry.all().stream()
+                .map(t -> new ToolSpec(t.name(), t.description(), t.inputSchema()))
+                .toList();
+        return AgentRunner.run(client, conversation, userText, specs, executor, ui, 60);
+    }
 
     private static final String OPENAI_SSE = """
             data: {"id":"1","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
@@ -103,10 +152,9 @@ class StreamingIntegrationTest {
     void openAiTurnStreamsSavesAndRestores() throws Exception {
         try (MockHttpServer server = new MockHttpServer((ex, body) -> MockHttpServer.writeSse(ex, OPENAI_SSE))) {
             Conversation conversation = new Conversation();
-            List<StreamEvent> rendered = new ArrayList<>();
-            TurnRunner.Result result = TurnRunner.run(
-                    LlmClientFactory.create(openAiProvider(server.baseUrl())),
-                    conversation, "你好", rendered::add);
+            NoopUi ui = new NoopUi();
+            AgentRunner.Result result = run(LlmClientFactory.create(openAiProvider(server.baseUrl())),
+                    conversation, "你好", ui);
 
             // 流式正文正确、无错误
             assertFalse(result.error(), result.errorMessage());
@@ -116,10 +164,10 @@ class StreamingIntegrationTest {
             assertEquals(9, result.inputTokens());
             assertEquals(7, result.outputTokens());
             // 渲染回调收到增量事件（TextDelta）
-            assertTrue(rendered.stream().anyMatch(e -> e instanceof StreamEvent.TextDelta));
+            assertTrue(ui.events.stream().anyMatch(e -> e instanceof StreamEvent.TextDelta));
 
-            // 助手消息入会话 + 落盘
-            conversation.addAssistant(result.text(), result.thinking(), result.signature());
+            // AgentRunner 已把最终 assistant 消息写回会话；落盘
+            assertEquals(2, conversation.messageCount());
             SessionStore store = new SessionStore(tmp);
             Instant now = Instant.now();
             SessionMeta meta = new SessionMeta("s1", now, now, conversation.previewTitle(),
@@ -129,9 +177,9 @@ class StreamingIntegrationTest {
             assertEquals(2, store.load("s1").orElseThrow().getMessages().size());
 
             // 第二轮：恢复后继续，旧消息随请求回传
-            TurnRunner.run(LlmClientFactory.create(openAiProvider(server.baseUrl())),
-                    conversation, "我刚才问的什么", null);
-            assertEquals(3, conversation.messageCount());
+            run(LlmClientFactory.create(openAiProvider(server.baseUrl())),
+                    conversation, "我刚才问的什么", new NoopUi());
+            assertEquals(4, conversation.messageCount());
             String secondBody = server.capturedBodies().get(1);
             assertTrue(secondBody.contains("\"role\":\"assistant\""));
             assertTrue(secondBody.contains("Hi there"));
@@ -143,9 +191,8 @@ class StreamingIntegrationTest {
     void anthropicThinkingSeparatedAndPersisted() throws Exception {
         try (MockHttpServer server = new MockHttpServer((ex, body) -> MockHttpServer.writeSse(ex, ANTHROPIC_SSE))) {
             Conversation conversation = new Conversation();
-            TurnRunner.Result result = TurnRunner.run(
-                    LlmClientFactory.create(anthropicProvider(server.baseUrl())),
-                    conversation, "分析一下", null);
+            AgentRunner.Result result = run(LlmClientFactory.create(anthropicProvider(server.baseUrl())),
+                    conversation, "分析一下", new NoopUi());
 
             assertFalse(result.error(), result.errorMessage());
             assertEquals("Hello world", result.text());
@@ -153,8 +200,8 @@ class StreamingIntegrationTest {
             assertEquals("sig-abc", result.signature());
             assertFalse(result.text().contains("Let me think"), "正文不得包含思考内容");
 
-            // 思考内容与 signature 随会话落盘
-            conversation.addAssistant(result.text(), result.thinking(), result.signature());
+            // 思考内容与 signature 随会话落盘（AgentRunner 已写入 assistant 消息）
+            assertEquals(2, conversation.messageCount());
             SessionStore store = new SessionStore(tmp);
             SessionMeta meta = new SessionMeta("s2", Instant.now(), Instant.now(),
                     conversation.previewTitle(), conversation.messageCount(),
@@ -172,9 +219,8 @@ class StreamingIntegrationTest {
     void httpErrorYieldsErrorResultWithoutAssistantMessage() throws Exception {
         try (MockHttpServer server = new MockHttpServer((ex, body) -> MockHttpServer.writeStatus(ex, 500, "boom"))) {
             Conversation conversation = new Conversation();
-            TurnRunner.Result result = TurnRunner.run(
-                    LlmClientFactory.create(openAiProvider(server.baseUrl())),
-                    conversation, "触发错误", null);
+            AgentRunner.Result result = run(LlmClientFactory.create(openAiProvider(server.baseUrl())),
+                    conversation, "触发错误", new NoopUi());
 
             assertTrue(result.error());
             assertTrue(result.errorMessage().contains("500"));
@@ -187,8 +233,7 @@ class StreamingIntegrationTest {
     void sessionMetaRefreshedOnSave() throws Exception {
         try (MockHttpServer server = new MockHttpServer((ex, body) -> MockHttpServer.writeSse(ex, OPENAI_SSE))) {
             Conversation conversation = new Conversation();
-            TurnRunner.run(LlmClientFactory.create(openAiProvider(server.baseUrl())), conversation, "我的第一个问题", null);
-            conversation.addAssistant("回答", "", null);
+            run(LlmClientFactory.create(openAiProvider(server.baseUrl())), conversation, "我的第一个问题", new NoopUi());
 
             SessionStore store = new SessionStore(tmp);
             SessionMeta meta = new SessionMeta("s3", Instant.now(), Instant.now(),

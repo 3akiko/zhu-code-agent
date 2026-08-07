@@ -24,7 +24,7 @@
 | 里程碑 | 名称 | 优先级 | 一句话目标 | 状态 |
 |--------|------|--------|-----------|------|
 | M1 | 聊天 TUI + 会话持久化 | P0 | 彩色终端 TUI + 流式输出 + 多轮记忆 + 双后端 + extended thinking + 会话落盘/恢复 | ✅ 已完成（2026-08-07） |
-| M2 | Agent 循环与 Tool Use | P0 | 模型输出工具调用 → 执行内置工具 → 结果回填循环，含权限确认 | 未开始 |
+| M2 | Agent 循环与 Tool Use | P0 | 模型输出工具调用 → 执行内置工具 → 结果回填循环，含权限确认 | ✅ 已完成（2026-08-08） |
 | M3 | 文件编辑增强与 Plan Mode | P0 | diff 展示、/plan 先计划后执行、文件快照回滚、权限模式 | 未开始 |
 | M4 | 上下文管理 | P1 | token 统计、上限告警、自动压缩、prompt 缓存 | 未开始 |
 | M5+ | 扩展特性 | P2 | 见「扩展清单」 | 未开始 |
@@ -40,6 +40,7 @@
 - **验收入口**：`docs/spec.md`（M1）。
 
 ### M2 Agent 循环与 Tool Use（P0）
+- **状态**：✅ 已完成（2026-08-08），四文档归档 `docs/milestones/m2/`，验收报告 `docs/验收报告-M2.md`。
 - **目标**：从"纯对话"升级为"会干活的 agent"——模型在回复中声明工具调用，程序执行并把结果回填，模型继续，直到完成。
 - **包含**：消息循环（tool_use / function_call 解析 → 执行 → 结果回填）；内置工具集 `read_file / write_file / edit_file / bash / grep / glob`；工具执行前权限确认（允许/拒绝/总是允许本次）；流事件模型扩展出 ToolCall 事件；安全控制：bash 与文件写默认需确认、路径越界检查。
 - **不做**：plan mode、diff 展示、undo（留给 M3）。
@@ -67,20 +68,23 @@
 - 多模态输入（图片）。
 - 非交互模式（`-p "prompt"` 一次性输出）与 remote/Web 模式（参考 mewcode 的 Javalin 远程模式）。
 - 团队/多 agent 协作模式。
+- 工具循环增强：无进展检测（连续相同工具+相同参数且结果无变化 → 主动提示停止）、Claude Code 式「暂停-继续」、并行工具执行（读类并行/写类串行）。
+- OS 级沙箱（macOS Seatbelt / Linux bubblewrap / 容器化），对标 Codex `--sandbox` 三档（readOnly/workspace-write/danger-full-access）与 Claude Code 的沙箱化 Bash。
+- /goal 类长任务：跨轮累计 token 预算做护栏（对标 Codex 0.128+ /goal）。
 
 ## 5. 特性对比表（随实现更新）
 
 > 现状 = M1 已完成（2026-08-07）。每完成一个里程碑回填一列并标注完成日期。
 
-| 功能维度 | zhuCodeAgent（现状） | Claude Code | Codex CLI |
+| 功能维度 | zhuCodeAgent（M1） | zhuCodeAgent（M2，2026-08-08） | Claude Code | Codex CLI |
 |----------|---------------------|-------------|-----------|
-| 交互界面 | ✅ 已完成（M1）：JLine3+ANSI 彩色 TUI | Ink(React) 全屏 TUI | 类 TUI + 状态行 |
+| 交互界面 | ✅ 已完成（M1）：JLine3+ANSI 彩色 TUI | ✅ 沿用 M1（每 agent 步骤状态行） | Ink(React) 全屏 TUI | 类 TUI + 状态行 |
 | 流式输出 | ✅ 已完成（M1）：SSE 增量实时打印 | 有 | 有 |
 | 多后端 | ✅ 已完成（M1）：anthropic / openai | Anthropic 为主 | OpenAI 为主 |
 | extended thinking | ✅ 已完成（M1）：灰色小字展示 + 多轮回传 | 有（可展开） | 有（reasoning） |
-| 工具调用 | 未做（M2） | 有 | 有 |
-| 权限控制 | 未做（M2/M3） | 有（plan/acceptEdits/bypass） | 有（plan/auto） |
-| 会话恢复 | ✅ 已完成（M1）：启动选择恢复 | 有（--resume/--continue） | 有（--resume/--continue） |
+| 工具调用 | 未做 | ✅ 已完成：6 内置工具 + Agent 循环 + 双协议 | 有 | 有 |
+| 权限控制 | 未做 | ✅ 部分：只读自动 + 写类/bash 行内确认 + 总是允许（内存）；acceptEdits/bypass 留 M3 | 有（plan/acceptEdits/bypass） | 有（plan/auto） |
+| 会话恢复 | ✅ 已完成（M1）：启动选择恢复 | ✅ 工具消息随会话落盘，恢复后循环上下文完整 | 有（--resume/--continue） | 有（--resume/--continue） |
 | 上下文管理 | 未做（M4） | 有（auto-compact） | 有（--compact） |
 | MCP / Subagents / Hooks | 未做（M5+） | 有 | 部分 |
 | 技术栈 | Java 21 | TypeScript/Node | Rust |

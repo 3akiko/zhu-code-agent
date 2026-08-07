@@ -1,15 +1,18 @@
 package com.zhubao.conversation;
 
 import com.zhubao.llm.ChatRequest;
+import com.zhubao.llm.ToolSpec;
+import com.zhubao.tool.ToolCall;
+import com.zhubao.tool.ToolResult;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 内存态多轮对话历史（spec F4）。
+ * 内存态多轮对话历史（spec F4 / M2 F9）。
  *
- * 职责：追加用户/助手消息、构造发送给 LLM 的统一请求、生成会话标题摘要与消息数。
- * 本类不依赖 session 包，避免会话模块与对话模块互相依赖；会话落盘由上层（tui）组装。
+ * 职责：追加用户/助手消息（含工具调用与结果块）、构造发送给 LLM 的统一请求、
+ * 生成会话标题摘要与消息数。本类不依赖 session 包；会话落盘由上层组装。
  */
 public class Conversation {
 
@@ -36,14 +39,47 @@ public class Conversation {
         history.add(new Message(Role.ASSISTANT, content, thinking, thinkingSignature));
     }
 
+    /**
+     * 追加一条带工具调用声明的 assistant 消息（spec F1 一次性回填）：
+     * 文本块（若有）+ 每个工具调用一个 ToolUseBlock。
+     */
+    public void addAssistantWithTools(String text, String thinking, String thinkingSignature, List<ToolCall> calls) {
+        List<ContentBlock> blocks = new ArrayList<>();
+        if (text != null && !text.isBlank()) {
+            blocks.add(new ContentBlock.TextBlock(text));
+        }
+        if (calls != null) {
+            for (ToolCall c : calls) {
+                blocks.add(new ContentBlock.ToolUseBlock(c.id(), c.name(), c.argumentsJson()));
+            }
+        }
+        history.add(new Message(Role.ASSISTANT, blocks, thinking, thinkingSignature));
+    }
+
+    /** 追加一条携带全部工具结果的 user 消息（spec F1 一次性回填） */
+    public void addToolResultBlocks(List<ToolResult> results) {
+        List<ContentBlock> blocks = new ArrayList<>();
+        if (results != null) {
+            for (ToolResult r : results) {
+                blocks.add(new ContentBlock.ToolResultBlock(r.id(), r.name(), r.isError(), r.output()));
+            }
+        }
+        history.add(new Message(Role.USER, blocks, null, null));
+    }
+
     /** 完整历史（不可变视图，防止外部修改） */
     public List<Message> getMessages() {
         return List.copyOf(history);
     }
 
-    /** 构造统一请求：系统提示词 + 完整历史 */
+    /** 构造统一请求（M1 兼容：不带 tools） */
     public ChatRequest buildRequest(String systemPrompt) {
         return new ChatRequest(systemPrompt, getMessages());
+    }
+
+    /** 构造统一请求：系统提示词 + 完整历史 + 工具定义（spec F8） */
+    public ChatRequest buildRequest(String systemPrompt, List<ToolSpec> tools) {
+        return new ChatRequest(systemPrompt, getMessages(), tools);
     }
 
     /** 会话标题：首条用户消息前 30 字符；无消息则为「新对话」 */

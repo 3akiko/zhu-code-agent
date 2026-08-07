@@ -26,7 +26,8 @@
 - F5 YAML 配置：使用 YAML 管理 provider 列表，每条含六个字段：name（标识）、protocol（anthropic/openai）、model、base_url、api_key、thinking（可选，是否启用扩展思考）；api_key 支持直接值或 `${ENV_VAR}` 引用，为空时回退到约定环境变量；配置解析失败时给出可读错误并以非 0 退出码退出；仓库提供示例配置文件。
 - F6 双协议与统一抽象：protocol=anthropic 走 Claude Messages API（SSE 流式、extended thinking）；protocol=openai 走 OpenAI Chat Completions API（SSE 流式）；两类响应收敛为统一的流事件序列；新增协议只需新增一个实现，调用方不变。
 - F7 extended thinking：provider.thinking=true 且 protocol=anthropic 时请求开启 extended thinking；思考内容以灰色小字实时打印，正式回复以正常颜色打印；思考内容不计入正式回复。
-- F8 基础命令：`/help` 打印可用命令与当前 provider/model 信息；`/exit` 退出进程（退出码 0，退出前保存会话）；`/clear` 清空屏幕（不丢会话历史）。
+- F8 基础命令：`/help` 打印可用命令与当前 provider/model 信息；`/exit` 退出进程（退出码 0，退出前保存会话）；`/clear` 清空屏幕（不丢会话历史）；`/new` 保存当前会话并新建一个会话（不退出程序，多 provider 时重新选择，取消则继续原会话）。
+  - 变更记录（2026-08-07）：`/new` 为用户直接指示新增，按用户决定实施并记录在案（未走重新审批流程）。
 - F9 会话持久化与恢复：每轮回复完成后自动将会话保存到 `~/.zhu-code-agent/sessions/` 下的 JSON 文件；退出（含 /exit）时保存最后一次状态；启动时若存在历史会话，先显示恢复选择页（「新建对话」+ 历史会话列表，按时间倒序，每项显示时间、首条消息摘要、消息数），方向键+回车选择；恢复后该会话完整上下文继续生效；恢复的会话使用其记录时的 provider（name/protocol/model/base_url 快照），api_key 仍从当前配置读取。
 
 ## 非功能需求
@@ -58,7 +59,7 @@
 - AC5（F5）：六字段 YAML 解析正确；`${ENV_VAR}` 引用与空值环境变量回退生效；坏配置给出可读错误且退出码非 0；示例配置文件可复制即用。
 - AC6（F6）：anthropic 与 openai 两种协议均能完成流式对话；Provider 通过工厂按 protocol 创建，新增协议不改调用方（代码审查 + 两类 mock 集成测试验证）。
 - AC7（F7）：thinking=true 时输出含灰色思考文字与正常色正文；thinking=false 时不出现思考段（mock SSE 事件验证，真实 API 可选）。
-- AC8（F8）：`/help` 打印帮助与当前 provider/model；`/exit` 退出且退出码 0；`/clear` 清屏且历史仍在。
+- AC8（F8）：`/help` 打印帮助与当前 provider/model；`/exit` 退出且退出码 0；`/clear` 清屏且历史仍在；`/new` 保存当前会话并进入新会话（验证：对话后执行 /new，退出重启后恢复列表中出现两个会话）。
 - AC9（N3/N4）：断网、401、500、坏 JSON、会话文件损坏时显示可读错误且进程不崩溃；日志与异常信息中不含 api_key。
 - AC10（N5/N6）：`mvn test` 全绿；核心逻辑有单测覆盖；mock 流式集成测试通过。
 - AC11（F9）：对话中每轮回复完成后会话文件被更新；退出后重启，选择该会话可恢复之前的全部消息与上下文，继续提问仍能引用旧内容（验证：跑一轮对话 → 退出 → 恢复 → 问"我刚才问的什么"）；会话文件中不含 api_key。

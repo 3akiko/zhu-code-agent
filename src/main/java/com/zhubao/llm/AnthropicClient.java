@@ -2,6 +2,7 @@ package com.zhubao.llm;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.zhubao.config.ProviderConfig;
+import com.zhubao.conversation.ContentBlock;
 import com.zhubao.conversation.Message;
 import com.zhubao.conversation.Role;
 
@@ -16,10 +17,10 @@ import java.util.concurrent.BlockingQueue;
 /**
  * Anthropic Claude Messages API 客户端。
  *
- * <p>POST {baseUrl}/v1/messages，SSE 流式；支持 extended thinking（spec F7）：
- * thinking_delta → {@link StreamEvent.ThinkingDelta}、signature_delta →
- * {@link StreamEvent.ThinkingComplete}。多轮时把上一轮 assistant 的 thinking 块
- * 与 signature 回传（Anthropic 协议硬性要求，spec F4+F7）。
+ * <p>POST {baseUrl}/v1/messages，SSE 流式；支持 extended thinking（spec F7）与
+ * 工具调用（M2 F8）：content_block_start(tool_use) + input_json_delta 累积 →
+ * content_block_stop 时发 {@link StreamEvent.ToolCall}。请求体携带 tools 定义，
+ * tool_result 以 user 消息内嵌 tool_result 块回传。
  */
 public class AnthropicClient extends AbstractStreamingClient {
 
@@ -36,6 +37,11 @@ public class AnthropicClient extends AbstractStreamingClient {
     private boolean inThinking;
     private final StringBuilder thinkingAccum = new StringBuilder();
     private String thinkingSignature;
+    // 工具调用累积（M2）
+    private boolean inToolUse;
+    private String toolUseId;
+    private String toolUseName;
+    private final StringBuilder toolUseJsonAccum = new StringBuilder();
 
     public AnthropicClient(ProviderConfig config) {
         super(config);
@@ -49,6 +55,10 @@ public class AnthropicClient extends AbstractStreamingClient {
         inThinking = false;
         thinkingAccum.setLength(0);
         thinkingSignature = "";
+        inToolUse = false;
+        toolUseId = "";
+        toolUseName = "";
+        toolUseJsonAccum.setLength(0);
     }
 
     @Override
@@ -66,6 +76,13 @@ public class AnthropicClient extends AbstractStreamingClient {
             thinking.put("budget_tokens", THINKING_BUDGET_TOKENS);
             body.put("thinking", thinking);
         }
+        if (request.tools() != null && !request.tools().isEmpty()) {
+            List<Map<String, Object>> tools = new ArrayList<>();
+            for (ToolSpec t : request.tools()) {
+                tools.add(ordered("name", t.name(), "description", t.description(), "input_schema", t.inputSchema()));
+            }
+            body.put("tools", tools);
+        }
         return HttpRequest.newBuilder()
                 .uri(URI.create(config.getBaseUrl() + "/v1/messages"))
                 .header("x-api-key", config.getApiKey())
@@ -75,20 +92,33 @@ public class AnthropicClient extends AbstractStreamingClient {
                 .build();
     }
 
-    /** 消息翻译：assistant 带 thinking 时输出 content blocks（thinking + text）实现多轮回传 */
+    /** 消息翻译：assistant 带 thinking/tool_use、user 带 tool_result 时输出内容块数组 */
     private List<Map<String, Object>> buildMessages(List<Message> messages) {
         List<Map<String, Object>> result = new ArrayList<>();
         for (Message m : messages) {
             Role role = m.getRole();
-            if (role == Role.ASSISTANT && m.getThinking() != null && !m.getThinking().isEmpty()) {
+            boolean hasThinking = role == Role.ASSISTANT
+                    && m.getThinking() != null && !m.getThinking().isEmpty();
+            boolean hasToolUse = m.getBlocks().stream().anyMatch(ContentBlock.ToolUseBlock.class::isInstance);
+            boolean hasToolResult = m.getBlocks().stream().anyMatch(ContentBlock.ToolResultBlock.class::isInstance);
+            if (hasThinking || hasToolUse || hasToolResult) {
                 List<Map<String, Object>> blocks = new ArrayList<>();
-                blocks.add(ordered("type", "thinking", "thinking", m.getThinking(),
-                        "signature", m.getThinkingSignature() == null ? "" : m.getThinkingSignature()));
-                blocks.add(ordered("type", "text", "text", m.getContent() == null ? "" : m.getContent()));
-                Map<String, Object> assistant = new LinkedHashMap<>();
-                assistant.put("role", "assistant");
-                assistant.put("content", blocks);
-                result.add(assistant);
+                if (hasThinking) {
+                    blocks.add(ordered("type", "thinking", "thinking", m.getThinking(),
+                            "signature", m.getThinkingSignature() == null ? "" : m.getThinkingSignature()));
+                }
+                for (ContentBlock b : m.getBlocks()) {
+                    if (b instanceof ContentBlock.TextBlock t) {
+                        blocks.add(ordered("type", "text", "text", t.text()));
+                    } else if (b instanceof ContentBlock.ToolUseBlock tu) {
+                        blocks.add(ordered("type", "tool_use", "id", tu.id(), "name", tu.name(),
+                                "input", parseJson(tu.argumentsJson())));
+                    } else if (b instanceof ContentBlock.ToolResultBlock tr) {
+                        blocks.add(ordered("type", "tool_result", "tool_use_id", tr.id(),
+                                "is_error", tr.isError(), "content", tr.output()));
+                    }
+                }
+                result.add(ordered("role", role.wire(), "content", blocks));
             } else {
                 result.add(ordered("role", role.wire(), "content", m.getContent() == null ? "" : m.getContent()));
             }
@@ -96,11 +126,21 @@ public class AnthropicClient extends AbstractStreamingClient {
         return result;
     }
 
+    /** 解析工具参数 JSON；失败回退为空对象（避免请求体带非法 JSON） */
+    private static JsonNode parseJson(String json) {
+        try {
+            JsonNode node = MAPPER.readTree(json == null ? "" : json);
+            return node == null ? MAPPER.createObjectNode() : node;
+        } catch (Exception e) {
+            return MAPPER.createObjectNode();
+        }
+    }
+
     /** 构造有序 Map（LinkedHashMap 保证字段顺序稳定，便于调试与断言） */
-    private static Map<String, Object> ordered(String... kv) {
+    private static Map<String, Object> ordered(Object... kv) {
         Map<String, Object> m = new LinkedHashMap<>();
         for (int i = 0; i + 1 < kv.length; i += 2) {
-            m.put(kv[i], kv[i + 1]);
+            m.put((String) kv[i], kv[i + 1]);
         }
         return m;
     }
@@ -118,10 +158,16 @@ public class AnthropicClient extends AbstractStreamingClient {
                 case "message_start" -> inputTokens =
                         data.path("message").path("usage").path("input_tokens").asInt(0);
                 case "content_block_start" -> {
-                    if ("thinking".equals(data.path("content_block").path("type").asText(""))) {
+                    String type = data.path("content_block").path("type").asText("");
+                    if ("thinking".equals(type)) {
                         inThinking = true;
                         thinkingAccum.setLength(0);
                         thinkingSignature = "";
+                    } else if ("tool_use".equals(type)) {
+                        inToolUse = true;
+                        toolUseId = data.path("content_block").path("id").asText("");
+                        toolUseName = data.path("content_block").path("name").asText("");
+                        toolUseJsonAccum.setLength(0);
                     }
                 }
                 case "content_block_delta" -> {
@@ -136,13 +182,19 @@ public class AnthropicClient extends AbstractStreamingClient {
                                 thinkingSignature = data.path("delta").path("signature").asText("");
                         case "text_delta" ->
                                 put(queue, new StreamEvent.TextDelta(data.path("delta").path("text").asText("")));
-                        default -> { /* input_json_delta 等 M2 处理 */ }
+                        case "input_json_delta" ->
+                                toolUseJsonAccum.append(data.path("delta").path("partial_json").asText(""));
+                        default -> { /* 其他 delta 类型忽略 */ }
                     }
                 }
                 case "content_block_stop" -> {
                     if (inThinking) {
                         put(queue, new StreamEvent.ThinkingComplete(thinkingSignature));
                         inThinking = false;
+                    }
+                    if (inToolUse) {
+                        put(queue, new StreamEvent.ToolCall(toolUseId, toolUseName, toolUseJsonAccum.toString()));
+                        inToolUse = false;
                     }
                 }
                 case "message_delta" -> {
