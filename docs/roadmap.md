@@ -77,17 +77,17 @@
 > 现状 = M1 已完成（2026-08-07）。每完成一个里程碑回填一列并标注完成日期。
 
 | 功能维度 | zhuCodeAgent（M1） | zhuCodeAgent（M2，2026-08-08） | Claude Code | Codex CLI |
-|----------|---------------------|-------------|-----------|
+|----------|---------------------|------------------------------|-----------|------------|
 | 交互界面 | ✅ 已完成（M1）：JLine3+ANSI 彩色 TUI | ✅ 沿用 M1（每 agent 步骤状态行） | Ink(React) 全屏 TUI | 类 TUI + 状态行 |
-| 流式输出 | ✅ 已完成（M1）：SSE 增量实时打印 | 有 | 有 |
-| 多后端 | ✅ 已完成（M1）：anthropic / openai | Anthropic 为主 | OpenAI 为主 |
-| extended thinking | ✅ 已完成（M1）：灰色小字展示 + 多轮回传 | 有（可展开） | 有（reasoning） |
+| 流式输出 | ✅ 已完成（M1）：SSE 增量实时打印 | ✅ 沿用 M1 | 有 | 有 |
+| 多后端 | ✅ 已完成（M1）：anthropic / openai | ✅ 沿用 M1 | Anthropic 为主 | OpenAI 为主 |
+| extended thinking | ✅ 已完成（M1）：灰色小字展示 + 多轮回传 | ✅ 沿用 M1 | 有（可展开） | 有（reasoning） |
 | 工具调用 | 未做 | ✅ 已完成：6 内置工具 + Agent 循环 + 双协议 | 有 | 有 |
 | 权限控制 | 未做 | ✅ 部分：只读自动 + 写类/bash 行内确认 + 总是允许（内存）；acceptEdits/bypass 留 M3 | 有（plan/acceptEdits/bypass） | 有（plan/auto） |
 | 会话恢复 | ✅ 已完成（M1）：启动选择恢复 | ✅ 工具消息随会话落盘，恢复后循环上下文完整 | 有（--resume/--continue） | 有（--resume/--continue） |
-| 上下文管理 | 未做（M4） | 有（auto-compact） | 有（--compact） |
-| MCP / Subagents / Hooks | 未做（M5+） | 有 | 部分 |
-| 技术栈 | Java 21 | TypeScript/Node | Rust |
+| 上下文管理 | 未做 | 未做（M4） | 有（auto-compact） | 有（--compact） |
+| MCP / Subagents / Hooks | 未做 | 未做（M5+） | 有 | 部分 |
+| 技术栈 | Java 21 | Java 21（同左） | TypeScript/Node | Rust |
 
 ## 6. 文档与记录规范
 
