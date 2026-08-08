@@ -106,3 +106,42 @@ AgentRunner（agent 包）          消息循环：stream → 事件累积 → �
 2. **raw 单键权限确认不可靠**：受限 PTY 下 tcsetattr 未生效（行缓冲），`enterRawMode()+reader().read()` 收不到按键。→ 改「输入 a/d/s 回车确认」，spec F3/AC3 变更控制记录。
 3. **macOS /var↔/private/var**：PathGuard 根目录与候选路径统一 realpath 比较，规避平台符号链接误判越界。
 4. **Java 文本块转义**：mock SSE 里 partial_json 的 `\"` 在文本块中会被转义吃掉一层，wire 层 JSON 非法。→ fixture 用 `\\"` 保留反斜杠。
+
+## 路径校验细则（PathGuard / DangerGuard）
+
+> 2026-08-08 补充（review 后文档化，含两处修复：tool_use 参数往返、rm -rf shell 展开拒绝）。
+
+### PathGuard：文件工具的工作区边界
+
+**规则（对所有文件类工具执行前强制校验）**：
+1. **根 = 项目 cwd**（`System.getProperty("user.dir")`），构造时 `toAbsolutePath().normalize()`。
+2. **归一化**：相对路径基于 root 解析，`..`/`.` 归一化后必须 `startsWith(root)`，否则拒绝（`路径越界（必须在工作区内）`）。
+3. **realpath（符号链接）**：路径存在 → 对整条路径 `toRealPath()`；不存在 → 对**最近存在的祖先** `toRealPath()` 再拼回剩余部分。解析后必须仍 `startsWith(root)`，否则拒绝（`符号链接指向工作区外`）。
+   - **为什么**：符号链接是文件系统里指向另一路径的特殊文件（如 `ln -s ~/Documents/secret ./data`）。只做字符串检查时 `data/notes.txt` 看似在 cwd 内，实际读写落在 cwd 外；`toRealPath()` 逐层解开链接得真实路径后再比较，防"看起来在里面、实际在外面"的偷渡。
+   - **不存在时找祖先**：`write_file` 新建文件时目标不存在，无法对整条路径 realpath → 对最近存在的祖先 realpath 再拼回剩余部分（如 `data` 是链接到 cwd 外的目录时，`data/new.txt` 会被解析到 cwd 外而拒绝，文件不会真实创建）。
+   - **root 也 realpath**：两侧统一 realpath 后比较，规避 macOS `/var ↔ /private/var` 类平台链接导致的误判。
+4. **root 与候选统一 realpath 比较**：规避 macOS `/var ↔ /private/var` 这类平台符号链接导致误判（两侧都解析后再比）。
+5. **禁写目录**：`.git/`（任意层级组件名为 `.git`）与 `~/.zhu-code-agent/`（程序自身目录）→ 拒绝（`禁止操作 .git 目录` / `禁止操作程序自身目录`）。
+6. **失败语义**：校验失败抛 `ToolException`，由工具层捕获转为 `ToolResult.error` 回填模型，进程不崩溃、不产生副作用。
+
+**覆盖工具**：read_file / write_file / edit_file / grep（子目录）/ glob；bash 的 cwd 目录也来自 PathGuard.root。
+
+### DangerGuard：危险命令防护
+
+**危险判定**：内置前缀清单（`sudo rm`、`mkfs`、`dd if=`、`shutdown`、`reboot`、`chown -R`、`:(){` 等）+ `rm` 递归强制删除识别（`-rf`/`-fr`/`-r -f` 分离 flag 均识别）。命中即「危险」→ 权限层**强制确认**（即使曾「总是允许」）。
+
+**文件系统修改命令目标路径校验（用户安全红线，2026-08-08 扩展）**：
+- **覆盖范围**：所有 `rm`（含无 flags / `-f` / `-r`，对齐 Claude Code/Codex「delete 边界与 flags 无关」）+ `rmdir` + `mv`/`cp` 目标（最后一个参数，或 `-t`/`--target-directory` 的值）。
+- **规则**：
+  1. **展开字符拒绝**：目标含 shell 展开/元字符（`~`、`$`、反引号、`$()`、`;`、`&`、`|`、`<`、`>`、引号、括号等，即不在白名单 `字母数字 / . _ - * ? [ ]` 内）→ **直接拒绝**（无法静态校验，运行时可能展开到 cwd 外）。覆盖 `rm ~/x`、`rm $HOME/x`、`mv a ~/dest`、`cp a $(pwd)/x` 等。
+  2. **越界拒绝**：目标经 PathGuard 解析必须位于 cwd 内（`/tmp/x`、`../x`、`/etc/hosts` 等拒绝；`rm` 校验所有参数、`mv`/`cp` 校验目标）。
+  3. **通配符**：取通配符前前缀静态校验（前缀必须在 cwd 内），通配符本体由 shell 在 cwd 内展开。
+  4. **执行前校验**：BashTool.execute 在 `ProcessBuilder` 前调用 `DangerGuard.assertFileMutationsInWorkspace`——即使权限被绕过也拦得住（纵深防御）。
+- **危险分级不变**：`rm -rf` 等仍属「危险命令」→ 权限层强制确认（即使曾「总是允许」）；普通 `rm`/`mv`/`cp` 正常确认 + 路径限制。
+
+### 相关修复记录（review 后）
+
+- **P1：tool_use 参数落盘丢失**——`Message.readBlock` 曾读 `arguments`（序列化字段实为 `argumentsJson`）且对文本节点用 `toString()`；改为读 `argumentsJson` + `asText()`（兼容 `arguments` 对象/字符串），并补往返与恢复断言。
+- **P1：rm -rf shell 展开绕过**——静态校验只看字面量，`~/x`、`$HOME/x` 可展开到 cwd 外；新增白名单字符校验，含展开字符的目标直接拒绝。
+- **P2：权限记忆粒度**——「总是允许」按 spec F3 改为文件写按**路径**、bash 按**完整命令串**记忆（此前按完整参数 JSON，同路径改内容会重复询问）。
+- **安全扩展（review 后）**——路径限制从「仅 rm -rf」扩展到所有 `rm`/`rmdir`/`mv`/`cp`（删除/移动/复制目标必须位于工作区内，与 flags 无关；含 shell 展开字符直接拒绝），对齐 Claude Code / Codex 的「工作区边界适用于所有文件系统修改操作」。

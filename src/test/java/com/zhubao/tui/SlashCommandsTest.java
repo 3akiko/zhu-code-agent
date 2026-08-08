@@ -14,6 +14,7 @@ class SlashCommandsTest {
         assertEquals(SlashCommands.Action.CLEAR, SlashCommands.parse("/clear"));
         assertEquals(SlashCommands.Action.NEW, SlashCommands.parse("/new"));
         assertEquals(SlashCommands.Action.PERMISSIONS, SlashCommands.parse("/permissions"));
+        assertEquals(SlashCommands.Action.PERMISSIONS, SlashCommands.parse("/permissions reset"));
         assertEquals(SlashCommands.Action.HELP, SlashCommands.parse("  /HELP  "));
     }
 

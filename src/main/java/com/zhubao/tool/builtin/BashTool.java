@@ -71,7 +71,7 @@ public final class BashTool implements Tool {
         }
         // 安全红线：rm -rf 目标必须位于工作区内，否则直接拒绝（不执行、无副作用）
         try {
-            DangerGuard.assertRmTargetsInWorkspace(command, guard);
+            DangerGuard.assertFileMutationsInWorkspace(command, guard);
         } catch (ToolException e) {
             return ToolResult.error(call, "危险命令已拒绝（" + e.getMessage() + "）");
         }

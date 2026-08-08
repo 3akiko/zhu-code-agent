@@ -72,7 +72,18 @@ public final class PermissionManager {
         return DangerGuard.isDangerous(command);
     }
 
+    /**
+     * 「总是允许」记忆键（spec F3：文件写按路径、bash 按完整命令串精确记忆）：
+     * <ul>
+     *   <li>write_file / edit_file → 按目标路径（同路径不同内容不再询问）</li>
+     *   <li>bash → 按完整命令串（只放行完全相同的命令）</li>
+     * </ul>
+     */
     private static String keyOf(ToolCall call) {
+        if ("write_file".equals(call.name()) || "edit_file".equals(call.name())) {
+            Object path = call.arguments().get("path");
+            return call.name() + "|path:" + (path == null ? "" : String.valueOf(path).trim());
+        }
         return call.name() + "|" + call.canonicalArguments();
     }
 }

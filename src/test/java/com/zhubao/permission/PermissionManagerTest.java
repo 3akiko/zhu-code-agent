@@ -41,13 +41,14 @@ class PermissionManagerTest {
     }
 
     @Test
-    void rememberAlwaysMatchesExactToolAndArgs() {
+    void fileWriteRememberedByPathPerSpec() {
         PermissionManager pm = manager();
         ToolCall writeA = call("write_file", Map.of("path", "a.txt", "content", "x"));
-        ToolCall writeA2 = call("write_file", Map.of("content", "x", "path", "a.txt")); // 参数顺序不同 → 键不同
         pm.rememberAlways(writeA);
+        // spec F3：文件写按路径记忆 → 同路径（不同 content/参数顺序）应命中
         assertEquals(PermissionDecision.ALLOW, pm.decide(writeA));
-        assertEquals(PermissionDecision.NEED_CONFIRM, pm.decide(writeA2));
+        assertEquals(PermissionDecision.ALLOW, pm.decide(call("write_file", Map.of("content", "y", "path", "a.txt"))));
+        // 不同路径仍需确认
         assertEquals(PermissionDecision.NEED_CONFIRM, pm.decide(call("write_file", Map.of("path", "b.txt", "content", "x"))));
     }
 

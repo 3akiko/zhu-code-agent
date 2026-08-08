@@ -151,7 +151,10 @@ class SessionStoreTest {
         Message assistant = loaded.getMessages().get(1);
         Message result = loaded.getMessages().get(2);
         assertEquals(1, assistant.getBlocks().size());
-        assertEquals("tu1", ((com.zhubao.conversation.ContentBlock.ToolUseBlock) assistant.getBlocks().get(0)).id());
+        com.zhubao.conversation.ContentBlock.ToolUseBlock tu =
+                (com.zhubao.conversation.ContentBlock.ToolUseBlock) assistant.getBlocks().get(0);
+        assertEquals("tu1", tu.id());
+        assertEquals("{\"path\":\"a.txt\"}", tu.argumentsJson(), "tool_use 参数必须完整往返（回归 P1）");
         assertEquals("内容", ((com.zhubao.conversation.ContentBlock.ToolResultBlock) result.getBlocks().get(0)).output());
     }
 

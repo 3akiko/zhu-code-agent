@@ -94,12 +94,31 @@ public class Message {
         String type = b.path("type").asText("");
         return switch (type) {
             case "tool_use" -> new ContentBlock.ToolUseBlock(
-                    b.path("id").asText(""), b.path("name").asText(""), b.path("arguments").toString());
+                    b.path("id").asText(""), b.path("name").asText(""), argumentsJsonOf(b));
             case "tool_result" -> new ContentBlock.ToolResultBlock(
                     b.path("id").asText(""), b.path("name").asText(""),
                     b.path("is_error").asBoolean(false), b.path("output").asText(""));
             default -> new ContentBlock.TextBlock(b.path("text").asText(""));
         };
+    }
+
+    /**
+     * 读取工具参数 JSON 字符串。
+     * 本系统序列化字段为 {@code argumentsJson}（字符串）；兼容手工/旧格式的 {@code arguments}（对象或字符串）。
+     * 注意：必须用 asText/toString 按节点类型取，不能对文本节点用 toString()（会带 JSON 引号）。
+     */
+    private static String argumentsJsonOf(JsonNode b) {
+        JsonNode node = b.path("argumentsJson");
+        if (node.isMissingNode() || node.isNull()) {
+            node = b.path("arguments");
+        }
+        if (node.isTextual()) {
+            return node.asText();
+        }
+        if (node.isObject() || node.isArray()) {
+            return node.toString();
+        }
+        return "";
     }
 
     /** 内容块（JSON 属性 content，序列化为块数组） */

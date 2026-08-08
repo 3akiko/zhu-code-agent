@@ -210,6 +210,9 @@ class AgentLoopIntegrationTest {
             assertTrue(secondBody.contains("tool_result"));
             assertTrue(secondBody.contains("tool_use_id"));
             assertTrue(secondBody.contains("hi"));
+            // 回填的 tool_use 必须带完整参数 input（回归 P1：参数不得丢失）
+            assertTrue(secondBody.contains("\"input\":{\"path\":\"a.txt\""));
+            assertTrue(secondBody.contains("\"input\":{\"path\":\"b.txt\""));
         }
     }
 
@@ -368,6 +371,8 @@ class AgentLoopIntegrationTest {
             assertEquals("done", r2.text());
             String thirdBody = server.capturedBodies().get(2);
             assertTrue(thirdBody.contains("tool_use"), "恢复后应回传历史工具上下文");
+            assertTrue(thirdBody.contains("\"input\":{\"path\":\"a.txt\""),
+                    "恢复后 tool_use 参数必须完整（回归 P1）");
         }
     }
 }

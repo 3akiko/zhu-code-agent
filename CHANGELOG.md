@@ -22,7 +22,13 @@
 
 ### Changed（M2）
 - `TurnRunner` 演进为 `agent/AgentRunner`（消息循环与 TUI 解耦）；`Message` 内容块化（向后兼容加载旧会话）。
-- 状态行粒度：每 agent 步骤一条（⏳ 思考中… / 🔧 执行工具…），首内容到达清除。
+- 状态行粒度：每 agent 步骤一条（⏳ 思考中… / 🔧 执行工具…），首内容到达清除；思考灰字与正文/工具摘要分行显示。
+
+### Fixed（M2 review 后，2026-08-08/09）
+- 会话恢复后 tool_use 参数丢失：`Message.readBlock` 读错字段名（`arguments` vs `argumentsJson`）且对文本节点误用 `toString()` → 改为 `argumentsJson` + `asText()`（兼容旧 `arguments`）。
+- `rm -rf` 路径校验被 shell 展开绕过：`~/x`、`$HOME/x`、`$(pwd)/x` 字面上落在 cwd 内被放行 → 目标含 `~ $ 反引号 $() ; & | < >` 等展开字符直接拒绝。
+- 工作区边界扩展：从「仅 rm -rf」扩展到所有 `rm`/`rmdir`/`mv`/`cp`（删除/移动/复制目标必须位于工作区内，与 flags 无关），对齐 Claude Code/Codex。
+- 权限记忆粒度：`/permissions` 支持带参数（`/permissions reset` 此前被误判为未知命令）。
 
 ### Docs（M2）
 - M2 四文档（spec/plan/task/checklist）已批准并归档至 `docs/milestones/m2/`；验收报告 `docs/验收报告-M2.md`。

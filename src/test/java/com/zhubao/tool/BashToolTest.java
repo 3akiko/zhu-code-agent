@@ -56,6 +56,44 @@ class BashToolTest {
     }
 
     @Test
+    void rmWithShellExpansionRejectedWithoutSideEffect() {
+        ToolResult r = new BashTool(new PathGuard(ws)).execute(call(Map.of("command", "rm -rf $HOME/m2-evil")));
+        assertTrue(r.isError(), "含 shell 展开的 rm -rf 应被拒绝");
+        assertTrue(r.output().contains("拒绝"));
+    }
+
+    @Test
+    void rmWithoutRfOutsideRejectedWithoutSideEffect() throws Exception {
+        Path outside = Files.createTempDirectory("outside-rmf");
+        Files.writeString(outside.resolve("v.txt"), "keep");
+        try {
+            ToolResult r = new BashTool(new PathGuard(ws)).execute(call(Map.of("command", "rm -f " + outside.resolve("v.txt"))));
+            assertTrue(r.isError(), "不带 -rf 的 rm 越界也应拒绝");
+            assertTrue(r.output().contains("拒绝"));
+            assertTrue(Files.exists(outside.resolve("v.txt")), "目标必须仍在（未执行）");
+        } finally {
+            outside.toFile().deleteOnExit();
+        }
+    }
+
+    @Test
+    void mvAndCpOutsideRejectedWithoutSideEffect() throws Exception {
+        Files.writeString(ws.resolve("src.txt"), "x");
+        Path outside = Files.createTempDirectory("outside-mv");
+        Files.writeString(outside.resolve("dest.txt"), "keep");
+        try {
+            ToolResult mv = new BashTool(new PathGuard(ws)).execute(call(Map.of("command", "mv src.txt " + outside.resolve("dest.txt"))));
+            assertTrue(mv.isError(), "mv 目标越界应拒绝");
+            assertTrue(mv.output().contains("拒绝"));
+            ToolResult cp = new BashTool(new PathGuard(ws)).execute(call(Map.of("command", "cp src.txt " + outside.resolve("dest.txt"))));
+            assertTrue(cp.isError(), "cp 目标越界应拒绝");
+            assertTrue(Files.exists(outside.resolve("dest.txt")), "目标文件应未被覆写");
+        } finally {
+            outside.toFile().deleteOnExit();
+        }
+    }
+
+    @Test
     void rmInsideWorkspaceAllowedButIsErrorForMissing() {
         ToolResult r = new BashTool(new PathGuard(ws)).execute(call(Map.of("command", "rm -rf ./nonexistent-dir")));
         // rm -rf 不存在目标：shell 返回 0（未报错），属于工作区内放行场景

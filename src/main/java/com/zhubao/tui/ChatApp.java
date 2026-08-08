@@ -289,10 +289,13 @@ public class ChatApp {
     private final class TuiAgentUi implements AgentUi {
 
         private boolean stepStatusCleared;
+        /** 当前行以思考灰字开头、尚未换行：遇到正文/工具摘要/结果预览时先换行（思考与正文分行） */
+        private boolean thinkingOpen;
 
         @Override
         public void onStep(String status) {
             stepStatusCleared = false;
+            thinkingOpen = false;
             ui.println(status, Ansi.THINKING);
         }
 
@@ -300,22 +303,34 @@ public class ChatApp {
         public void onEvent(StreamEvent event) {
             if (event instanceof StreamEvent.TextDelta td) {
                 clearStepStatus();
+                breakThinkingLine();
                 ui.print(td.text(), null);
             } else if (event instanceof StreamEvent.ThinkingDelta td) {
                 clearStepStatus();
                 ui.print(td.text(), Ansi.THINKING);
+                thinkingOpen = true;
             }
         }
 
         @Override
         public void onToolCall(ToolCall call) {
             clearStepStatus();
+            breakThinkingLine();
             ui.println("🔧 " + toolSummary(call), Ansi.HIGHLIGHT);
         }
 
         @Override
         public void onToolResult(ToolResult result, int previewLines) {
+            breakThinkingLine();
             ui.println(resultPreview(result, previewLines), Ansi.THINKING);
+        }
+
+        /** 若当前行还是思考灰字，先换行再输出其他内容 */
+        private void breakThinkingLine() {
+            if (thinkingOpen) {
+                ui.println();
+                thinkingOpen = false;
+            }
         }
 
         @Override

@@ -22,13 +22,19 @@ public final class SlashCommands {
         if (line == null) {
             return Action.NONE;
         }
-        return switch (line.trim().toLowerCase()) {
+        String cmd = line.trim().toLowerCase();
+        return switch (cmd) {
             case "/help" -> Action.HELP;
             case "/exit", "/quit" -> Action.EXIT;
             case "/clear" -> Action.CLEAR;
             case "/new" -> Action.NEW;
-            case "/permissions" -> Action.PERMISSIONS;
-            default -> Action.NONE;
+            default -> {
+                // /permissions 支持带参数（如 /permissions reset），按前缀识别
+                if (cmd.equals("/permissions") || cmd.startsWith("/permissions ")) {
+                    yield Action.PERMISSIONS;
+                }
+                yield Action.NONE;
+            }
         };
     }
 }
