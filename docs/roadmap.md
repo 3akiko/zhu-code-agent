@@ -1,7 +1,7 @@
 状态：approved
 # zhuCodeAgent 路线图（Roadmap）
 
-> 最后更新：2026-08-09（M3 完成：文件编辑增强与 Plan Mode；新增里程碑收尾检查清单，防 README 等文档漏更）
+> 最后更新：2026-08-10（M4–M7 重新规划：M5 拆分为「并行与 Subagents / 生态集成 / 安全纵深」，补齐稳定性与工程化前置项；新增里程碑收尾检查清单，防 README 等文档漏更）
 > 本文件是产品级地图：里程碑、优先级、扩展清单、与主流 Coding Agent 的对比追踪。
 > 每个里程碑的详细需求/设计/任务/验收分别落在 `docs/spec.md` / `docs/plan.md` / `docs/task.md` / `docs/checklist.md`（四文档流程，见文末「文档与记录规范」）。
 
@@ -25,9 +25,12 @@
 |--------|------|--------|-----------|------|
 | M1 | 聊天 TUI + 会话持久化 | P0 | 彩色终端 TUI + 流式输出 + 多轮记忆 + 双后端 + extended thinking + 会话落盘/恢复 | ✅ 已完成（2026-08-07） |
 | M2 | Agent 循环与 Tool Use | P0 | 模型输出工具调用 → 执行内置工具 → 结果回填循环，含权限确认 | ✅ 已完成（2026-08-08） |
-| M3 | 文件编辑增强与 Plan Mode | P0 | diff 展示、/plan 先计划后执行、文件快照回滚、权限模式 | 未开始 |
-| M4 | 上下文管理 | P1 | token 统计、上限告警、自动压缩、prompt 缓存 | 未开始 |
-| M5+ | 扩展特性 | P2 | 见「扩展清单」 | 未开始 |
+| M3 | 文件编辑增强与 Plan Mode | P0 | diff 展示、/plan 先计划后执行、文件快照回滚、权限模式 | ✅ 已完成（2026-08-09） |
+| M4 | 上下文管理与稳定性 | P0 | token 统计/上限告警/自动压缩/prompt 缓存 + 流式中断 + 非交互 -p + 结构化输出容错 | 未开始 |
+| M5 | Agent 扩展：并行与 Subagents | P0 | 客户端并发安全重构 → 并行工具执行 → Subagents/Task 子任务 | 未开始 |
+| M6 | 生态集成：MCP / Hooks / Skills | P1 | MCP 协议接入 + 生命周期 Hooks + 可安装技能包 | 未开始 |
+| M7 | 安全纵深与工程化 | P1 | OS 级沙箱 + 权限记忆跨会话落盘 + git 集成 + 结构化日志 | 未开始 |
+| M8+ | 扩展特性 | P2 | 见「扩展清单」 | 未开始 |
 
 优先级说明：P0=核心功能（面试必讲、Coding Agent 的骨架），P1=重要但可后置，P2=非核心/按需。
 
@@ -52,31 +55,62 @@
 - **包含**：`edit_file` 变更 diff 展示；`/plan` 模式（先产出计划，用户批准后才执行，支持修改意见重新生成）；文件历史快照与回滚（undo/rewind，跨会话）；权限模式演进（acceptEdits / bypassPermissions 三档，安全红线不削弱）。
 - **验收入口**：M3 的 `docs/spec.md`。
 
-### M4 上下文管理（P1）
-- **包含**：token 用量统计与展示、接近上限告警、上下文自动压缩（compaction，对标 Claude Code 的 /compact）、Anthropic prompt caching。
+### M4 上下文管理与稳定性（P0）
+- **目标**：让长会话"不崩、不贵、可中断、可脚本化"——上下文窗口是真实 coding agent 的硬瓶颈，也是后面所有功能的地基。
+- **包含**：
+  - token 用量统计与展示（每轮 in/out + 会话累计 + 上限百分比）
+  - 接近上限告警（如 80% 提示，可配）
+  - 上下文自动压缩（compaction：摘要化最旧轮次 / 截断 tool_result / 丢弃历史，对标 Claude Code 的 /compact）
+  - prompt 缓存（Anthropic cache_control + OpenAI cached_tokens 展示，降本提速）
+  - 流式中断（Ctrl+C 取消本次生成，半成品消息回滚）
+  - 非交互模式 `-p "prompt"`（一次性输出 + 退出码，供 CI / 脚本化验证）
+  - 结构化输出容错（工具参数 schema 校验 + 重试）
+- **不做**：并行工具/Subagents（M5）、MCP/Hooks/Skills（M6）、OS 沙箱（M7）。
 - **验收入口**：M4 的 `docs/spec.md`。
 
-### M5+ 扩展特性（P2，按需）
+### M5 Agent 扩展：并行与 Subagents（P0）
+- **目标**：从"单 agent 串行"升级为"多 agent 并行"——技术说服力最强的里程碑，面试重点。
+- **包含**：
+  - ① 客户端并发安全重构：AnthropicClient / OpenAiClient 的流累积状态改为 per-call 持有者（Subagents 与并行工具执行的**硬前置**，TODO 已记）
+  - ② 并行工具执行：读类并行 / 写类串行、结果保序（`ToolExecutor` 新增并行实现，接口不变）
+  - ③ Subagents / Task：父 agent 派生子任务（独立会话/权限/护栏上限），结果回填，支持并行子任务
+- **不做**：MCP/Hooks/Skills（M6）、OS 沙箱（M7）。
+- **验收入口**：M5 的 `docs/spec.md`。
+
+### M6 生态集成：MCP / Hooks / Skills（P1）
+- **目标**：接入生态标准与扩展机制，让 agent"可连接、可扩展"。
+- **包含**：
+  - MCP（Model Context Protocol）：自研轻量 stdio JSON-RPC 客户端，把 MCP server 的工具注册进现有 `Tool` 抽象（零协议改动）
+  - Hooks：生命周期事件（PreToolUse / PostToolUse / Stop 等）+ 配置驱动的 hook 执行（通知/命令）
+  - Skills：可安装技能包（SKILL.md + 元数据，按需注入 system prompt）
+- **验收入口**：M6 的 `docs/spec.md`。
+
+### M7 安全纵深与工程化（P1）
+- **目标**：从"应用层守卫"升级为"应用层 + 内核层纵深防御"，并补齐生产工程。
+- **包含**：
+  - OS 级沙箱：macOS Seatbelt（bash 子进程沙箱化：仅工作区可写、deny 网络），对标 Codex `--sandbox` 三档；与 PathGuard/DangerGuard/PermissionManager 叠加（纵深防御）
+  - 权限记忆跨会话落盘：会话级 permissions/settings（按路径/命令持久化授权 + 默认权限模式，落盘脱敏）
+  - git 集成：dirty 检测、commit 建议、与 /plan / diff / 回滚协同
+  - 结构化日志（`--verbose`，JSON lines，api_key 脱敏）
+- **不做**：worktree 隔离（M8+ 可选亮点）。
+- **验收入口**：M7 的 `docs/spec.md`。
+
+### M8+ 扩展特性（P2，按需）
 - Markdown 富渲染（代码块高亮、表格）。
-- 流式中断（Ctrl+C 取消本次生成）。
 - `--resume` / `--continue` 快捷参数（直接恢复最近会话，跳过启动选择页）。
 - `openai-compat` 协议（与 openai 同构，仅 base_url 不同，扩展成本低；DeepSeek 已可直接用 `protocol: openai`）。
 - OpenAI 兼容协议的 `reasoning_content` 解析（deepseek-reasoner 等推理模型思考展示）。
-- Subagents / Task（并行子任务）。
-- MCP（Model Context Protocol）集成。
-- Hooks（生命周期钩子）。
-- Skills（可安装技能包）。
 - 多模态输入（图片）。
-- 非交互模式（`-p "prompt"` 一次性输出）与 remote/Web 模式（参考 mewcode 的 Javalin 远程模式）。
-- 团队/多 agent 协作模式。
-- 工具循环增强：无进展检测（连续相同工具+相同参数且结果无变化 → 主动提示停止）、Claude Code 式「暂停-继续」、并行工具执行（读类并行/写类串行）。
+- remote/Web 模式（参考 mewcode 的 Javalin 远程模式）。
+- 团队 / 多 agent 协作模式。
+- 工具循环增强：无进展检测（连续相同工具+相同参数且结果无变化 → 主动提示停止）、Claude Code 式「暂停-继续」。
 - 工具结果块级渲染 / 交互式展开-收缩（M2/M3 连续延期的项，与 diff 块级渲染一起做）。
-- OS 级沙箱（macOS Seatbelt / Linux bubblewrap / 容器化），对标 Codex `--sandbox` 三档（readOnly/workspace-write/danger-full-access）与 Claude Code 的沙箱化 Bash。
-- /goal 类长任务：跨轮累计 token 预算做护栏（对标 Codex 0.128+ /goal）。
+- `/goal` 类长任务：跨轮累计 token 预算做护栏（对标 Codex 0.128+ /goal）。
+- git worktree 隔离工作区（对标 Codex 的 worktree 模式：临时分支工作区 + 权限/快照按工作区根隔离，安全隔离 + git 深度结合）。
 
 ## 5. 特性对比表（随实现更新）
 
-> 现状 = M3 已完成（2026-08-09）。每完成一个里程碑回填一列并标注完成日期。
+> 现状 = M3 已完成（2026-08-09）。每完成一个里程碑回填一列并标注完成日期。M4–M7 为规划目标，见「4. 里程碑详情」。
 
 | 功能维度 | zhuCodeAgent（M1） | zhuCodeAgent（M2，2026-08-08） | zhuCodeAgent（M3，2026-08-09） | Claude Code | Codex CLI |
 |----------|---------------------|------------------------------|------------------------------|-----------|------------|
@@ -88,8 +122,9 @@
 | 权限控制 | 未做 | ✅ 部分：只读自动 + 写类/bash 行内确认 + 总是允许（内存） | ✅ 三档模式：normal / acceptEdits / bypassPermissions（危险命令仍强制确认，红线不削弱） | 有（plan/acceptEdits/bypass） | 有（plan/auto） |
 | diff 展示 / undo 回滚 | 未做 | 未做（留 M3） | ✅ diff 内嵌彩色展示 + 全量快照 /undo /rewind（跨会话） | 有（FileSnapshotService 快照） | diff 高亮；回滚靠 git |
 | 会话恢复 | ✅ 已完成（M1）：启动选择恢复 | ✅ 工具消息随会话落盘，恢复后循环上下文完整 | ✅ 沿用 M2（快照按会话隔离） | 有（--resume/--continue） | 有（--resume/--continue） |
-| 上下文管理 | 未做 | 未做（M4） | 未做（M4） | 有（auto-compact） | 有（--compact） |
-| MCP / Subagents / Hooks | 未做 | 未做（M5+） | 未做（M5+） | 有 | 部分 |
+| 上下文管理 | 未做 | 未做（M4） | 未做（M4） | 规划（M4：token 统计/告警/自动压缩/prompt 缓存） | 有（auto-compact） | 有（--compact） |
+| MCP / Subagents / Hooks / Skills | 未做 | 未做 | 未做 | 规划（M5 Subagents / M6 MCP·Hooks·Skills） | 有 | 部分 |
+| OS 级沙箱 | 未做 | 未做 | 未做 | 规划（M7：macOS Seatbelt，应用层守卫+内核隔离纵深防御） | 有（Seatbelt/bwrap） | 有（--sandbox 三档） |
 | 技术栈 | Java 21 | Java 21（同左） | Java 21（同左） | TypeScript/Node | Rust |
 
 ## 6. 文档与记录规范

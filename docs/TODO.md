@@ -2,6 +2,7 @@
 
 > 跨里程碑的待办/已知问题。里程碑级功能见 `docs/roadmap.md`，这里放开发中发现的具体待办。
 > 每项完成后打勾并注明日期/提交。
+> **里程碑归属**（2026-08-10 与 roadmap M4–M8+ 重组对齐）：M4 上下文管理与稳定性 / M5 并行与 Subagents / M6 生态集成 / M7 安全纵深与工程化 / M8+ 扩展。
 
 ## 待办
 
@@ -16,20 +17,20 @@
 
 ## 开发中发现的技术债务（2026-08-07 review 记录）
 
-- [ ] **客户端并发安全**：`AnthropicClient`/`OpenAiClient` 的流累积状态（inputTokens/outputTokens/stopReason/thinkingAccum 等）是实例字段，同一实例并发 `stream()` 有数据竞争。M1 因「每轮新建实例 + UI 串行」规避；M2 做 subagents 并发前需重构为 per-call 状态持有者。
-- [ ] **max_tokens 可配置化**：目前 AnthropicClient 写死 8192/64000；建议后续做成 provider 配置字段，并按模型区分上限（Claude Opus 32k vs Sonnet 64k），避免 opus + thinking 时 64000 报错。
-- [ ] **会话存储性能**：当前每轮整文件原子写（O(n)/次），聊天规模够用；M2 上下文变大（工具输出/大段代码入历史）后评估 JSONL 追加写（无需文件锁，单进程单写者）。
-- [ ] **多行输入**：M1 单行输入（Enter 即发送）；Shift+Enter 换行需绑定各终端的转义序列 + 多行渲染，属 M2 UI 增强。
-- [ ] **退出时优雅关闭流线程**：目前 daemon 线程在 JVM 退出时被直接掐断；可改为退出前 interrupt + join。
+- [ ] **客户端并发安全**（→ **M5 ① 前置**：Subagents/并行的硬前置，roadmap M5 已列入）：`AnthropicClient`/`OpenAiClient` 的流累积状态（inputTokens/outputTokens/stopReason/thinkingAccum 等）是实例字段，同一实例并发 `stream()` 有数据竞争。M1 因「每轮新建实例 + UI 串行」规避；M2 做 subagents 并发前需重构为 per-call 状态持有者。
+- [ ] **max_tokens 可配置化**（→ 建议随 **M4**：provider 配置扩展 + 上下文预算）：目前 AnthropicClient 写死 8192/64000；建议后续做成 provider 配置字段，并按模型区分上限（Claude Opus 32k vs Sonnet 64k），避免 opus + thinking 时 64000 报错。
+- [ ] **会话存储性能**（→ 建议随 **M4** 上下文压缩 或 **M7** 工程化一并做 JSONL）：当前每轮整文件原子写（O(n)/次），聊天规模够用；M2 上下文变大（工具输出/大段代码入历史）后评估 JSONL 追加写（无需文件锁，单进程单写者）。
+- [ ] **多行输入**（→ 后置 **M8+**：UI 体验类）：M1 单行输入（Enter 即发送）；Shift+Enter 换行需绑定各终端的转义序列 + 多行渲染，属 M2 UI 增强。
+- [ ] **退出时优雅关闭流线程**（→ 随 **M4** 流式中断一起做：interrupt + join）：目前 daemon 线程在 JVM 退出时被直接掐断；可改为退出前 interrupt + join。
 
 ## M3 开发中发现的技术债务（2026-08-09 review 记录）
 
-- [ ] **回滚冲突检测**：M3 的 undo/rewind 直接恢复检查点内容，不检测「回滚后用户/其他工具又手工改过文件」——可能覆盖后续改动；后续可加「恢复前比对当前内容与检查点后一状态，不一致则提示」。
-- [ ] **快照目录清理**：`~/.zhu-code-agent/snapshots/<会话ID>/checkpoints.json` 只增不减（rewind 会截断，但普通会话持续增长），无容量上限；后续可按会话/时间清理或做大小上限。
-- [ ] **/plan 修改意见文案**：意见以 user 消息「（对计划的修改意见）xxx」写入会话，模型可见；后续可考虑专用标记块避免与普通用户消息混淆。
+- [ ] **回滚冲突检测**（→ 建议 **M7**：与 git 集成/回滚协同时一并）：M3 的 undo/rewind 直接恢复检查点内容，不检测「回滚后用户/其他工具又手工改过文件」——可能覆盖后续改动；后续可加「恢复前比对当前内容与检查点后一状态，不一致则提示」。
+- [ ] **快照目录清理**（→ 建议 **M7** 工程化：总量上限与清理策略）：`~/.zhu-code-agent/snapshots/<会话ID>/checkpoints.json` 只增不减（rewind 会截断，但普通会话持续增长），无容量上限；后续可按会话/时间清理或做大小上限。
+- [ ] **/plan 修改意见文案**（→ 后置小项）：意见以 user 消息「（对计划的修改意见）xxx」写入会话，模型可见；后续可考虑专用标记块避免与普通用户消息混淆。
 
 ## 其他已知项（可选项，来自开发过程）
 
-- [ ] OpenAI 兼容协议 `reasoning_content` 解析（deepseek-reasoner 等推理模型思考灰字展示）——见 roadmap 扩展清单
-- [ ] 应用内会话清理命令（如 `/clear-sessions`）——用户可临时用 `rm ~/.zhu-code-agent/sessions/*.json` 手动清
-- [ ] Anthropic 真机验证（需 `ANTHROPIC_API_KEY`；代码路径已被 mock 测试覆盖）
+- [ ] OpenAI 兼容协议 `reasoning_content` 解析（→ **M8+**，roadmap 扩展清单已有）：deepseek-reasoner 等推理模型思考灰字展示
+- [ ] 应用内会话清理命令（→ 后置小工具）：如 `/clear-sessions`；用户可临时用 `rm ~/.zhu-code-agent/sessions/*.json` 手动清
+- [ ] Anthropic 真机验证（→ 可选，需 `ANTHROPIC_API_KEY`；代码路径已被 mock 测试覆盖）
