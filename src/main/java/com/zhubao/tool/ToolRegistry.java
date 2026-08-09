@@ -1,5 +1,6 @@
 package com.zhubao.tool;
 
+import com.zhubao.diff.DiffGenerator;
 import com.zhubao.tool.builtin.BashTool;
 import com.zhubao.tool.builtin.EditFileTool;
 import com.zhubao.tool.builtin.GlobTool;
@@ -19,10 +20,11 @@ public final class ToolRegistry {
 
     private final Map<String, Tool> tools = new LinkedHashMap<>();
 
-    public ToolRegistry(PathGuard guard) {
+    public ToolRegistry(PathGuard guard, int diffMaxLines) {
+        DiffGenerator diff = new DiffGenerator(diffMaxLines);
         register(new ReadFileTool(guard));
-        register(new WriteFileTool(guard));
-        register(new EditFileTool(guard));
+        register(new WriteFileTool(guard, diff));
+        register(new EditFileTool(guard, diff));
         register(new BashTool(guard));
         register(new GrepTool(guard));
         register(new GlobTool(guard));

@@ -11,6 +11,7 @@ import com.zhubao.llm.ToolSpec;
 import com.zhubao.permission.PermissionChoice;
 import com.zhubao.permission.PermissionManager;
 import com.zhubao.tool.PathGuard;
+import com.zhubao.tool.PlanModeExecutor;
 import com.zhubao.tool.SerialToolExecutor;
 import com.zhubao.tool.ToolCall;
 import com.zhubao.tool.ToolRegistry;
@@ -95,7 +96,7 @@ class AgentRunnerTest {
     }
 
     private Harness harness() {
-        ToolRegistry registry = new ToolRegistry(new PathGuard(ws));
+        ToolRegistry registry = new ToolRegistry(new PathGuard(ws), 200);
         PermissionManager permissions = new PermissionManager(registry);
         StubUi ui = new StubUi();
         SerialToolExecutor executor = new SerialToolExecutor(registry, permissions, ui, 5);
@@ -190,5 +191,27 @@ class AgentRunnerTest {
         assertTrue(r.error());
         assertTrue(r.errorMessage().contains("网络错误"));
         assertEquals(1, h.conversation.messageCount(), "出错时只保留用户消息");
+    }
+
+    @Test
+    void runPlanResearchesThenEndsWithPlanTextNoSideEffects() throws Exception {
+        Harness h = harness();
+        Files.writeString(ws.resolve("a.txt"), "hello");
+        StubClient client = new StubClient(List.of(
+                // 第一步：只读调研 read_file（带 StreamEnd 结束该步）
+                List.of(new StreamEvent.ToolCall("tc1", "read_file", "{\"path\":\"a.txt\"}"),
+                        new StreamEvent.StreamEnd("tool_use", 1, 2)),
+                // 第二步：end_turn 输出计划
+                List.of(new StreamEvent.TextDelta("计划：1. 修改 a.txt 内容"),
+                        new StreamEvent.StreamEnd("end_turn", 5, 6))));
+        PlanModeExecutor planExec = new PlanModeExecutor(h.registry, h.permissions, h.ui, 5);
+        AgentRunner.Result r = AgentRunner.runPlan(client, h.conversation, "计划修改 a.txt",
+                h.specs, planExec, h.ui, 60, 5_000);
+        assertFalse(r.error(), r.errorMessage());
+        assertTrue(r.text().contains("计划"), r.text());
+        // 会话：user + assistant(tool_use) + user(tool_result) + assistant(计划)
+        assertEquals(4, h.conversation.messageCount());
+        // 文件未被修改（只读调研）
+        assertEquals("hello", Files.readString(ws.resolve("a.txt")));
     }
 }

@@ -17,7 +17,7 @@ class PermissionManagerTest {
     Path ws;
 
     private PermissionManager manager() {
-        return new PermissionManager(new ToolRegistry(new PathGuard(ws)));
+        return new PermissionManager(new ToolRegistry(new PathGuard(ws), 200));
     }
 
     private ToolCall call(String name, Map<String, Object> args) {

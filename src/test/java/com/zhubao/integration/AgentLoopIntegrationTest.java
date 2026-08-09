@@ -178,7 +178,7 @@ class AgentLoopIntegrationTest {
 
     private AgentRunner.Result run(LlmClient client, Conversation conversation, String userText,
                                    TestUi ui, PermissionManager pm) {
-        ToolRegistry registry = new ToolRegistry(new PathGuard(tmp));
+        ToolRegistry registry = new ToolRegistry(new PathGuard(tmp), 200);
         SerialToolExecutor executor = new SerialToolExecutor(registry, pm, ui, 5);
         List<ToolSpec> specs = registry.all().stream()
                 .map(t -> new ToolSpec(t.name(), t.description(), t.inputSchema()))
@@ -191,7 +191,7 @@ class AgentLoopIntegrationTest {
         try (MockHttpServer server = scriptedServer(n -> n == 1 ? ANTHRO_TOOL_SSE : ANTHRO_END_SSE)) {
             Conversation conversation = new Conversation();
             TestUi ui = new TestUi();
-            PermissionManager pm = new PermissionManager(new ToolRegistry(new PathGuard(tmp)));
+            PermissionManager pm = new PermissionManager(new ToolRegistry(new PathGuard(tmp), 200));
             AgentRunner.Result r = run(LlmClientFactory.create(anthropicProvider(server.baseUrl())),
                     conversation, "创建两个文件", ui, pm);
 
@@ -221,7 +221,7 @@ class AgentLoopIntegrationTest {
         try (MockHttpServer server = scriptedServer(n -> n == 1 ? OPENAI_TOOL_SSE : OPENAI_END_SSE)) {
             Conversation conversation = new Conversation();
             TestUi ui = new TestUi();
-            PermissionManager pm = new PermissionManager(new ToolRegistry(new PathGuard(tmp)));
+            PermissionManager pm = new PermissionManager(new ToolRegistry(new PathGuard(tmp), 200));
             AgentRunner.Result r = run(LlmClientFactory.create(openAiProvider(server.baseUrl())),
                     conversation, "写文件", ui, pm);
 
@@ -241,7 +241,7 @@ class AgentLoopIntegrationTest {
             Conversation conversation = new Conversation();
             TestUi ui = new TestUi();
             ui.choice = PermissionChoice.DENY;
-            PermissionManager pm = new PermissionManager(new ToolRegistry(new PathGuard(tmp)));
+            PermissionManager pm = new PermissionManager(new ToolRegistry(new PathGuard(tmp), 200));
             AgentRunner.Result r = run(LlmClientFactory.create(anthropicProvider(server.baseUrl())),
                     conversation, "写文件", ui, pm);
 
@@ -262,7 +262,7 @@ class AgentLoopIntegrationTest {
             Conversation conversation = new Conversation();
             TestUi ui = new TestUi();
             ui.choice = PermissionChoice.ALLOW_ALWAYS;
-            PermissionManager pm = new PermissionManager(new ToolRegistry(new PathGuard(tmp)));
+            PermissionManager pm = new PermissionManager(new ToolRegistry(new PathGuard(tmp), 200));
             AgentRunner.Result r = run(LlmClientFactory.create(anthropicProvider(server.baseUrl())),
                     conversation, "写两个文件", ui, pm);
 
@@ -283,7 +283,7 @@ class AgentLoopIntegrationTest {
         try (MockHttpServer server = scriptedServer(n -> n == 1 ? escapeSse : ANTHRO_END_SSE)) {
             Conversation conversation = new Conversation();
             TestUi ui = new TestUi();
-            PermissionManager pm = new PermissionManager(new ToolRegistry(new PathGuard(tmp)));
+            PermissionManager pm = new PermissionManager(new ToolRegistry(new PathGuard(tmp), 200));
             AgentRunner.Result r = run(LlmClientFactory.create(anthropicProvider(server.baseUrl())),
                     conversation, "写文件", ui, pm);
 
@@ -323,7 +323,7 @@ class AgentLoopIntegrationTest {
         try (MockHttpServer server = scriptedServer(n -> n == 1 ? ANTHRO_BASH_TOOL_SSE : ANTHRO_END_SSE)) {
             Conversation conversation = new Conversation();
             TestUi ui = new TestUi();
-            PermissionManager pm = new PermissionManager(new ToolRegistry(new PathGuard(tmp)));
+            PermissionManager pm = new PermissionManager(new ToolRegistry(new PathGuard(tmp), 200));
             AgentRunner.Result r = run(LlmClientFactory.create(anthropicProvider(server.baseUrl())),
                     conversation, "跑命令", ui, pm);
             assertFalse(r.error(), r.errorMessage());
@@ -352,7 +352,7 @@ class AgentLoopIntegrationTest {
             // 第一轮：建文件 + 落盘
             Conversation conversation = new Conversation();
             TestUi ui = new TestUi();
-            PermissionManager pm = new PermissionManager(new ToolRegistry(new PathGuard(tmp)));
+            PermissionManager pm = new PermissionManager(new ToolRegistry(new PathGuard(tmp), 200));
             run(LlmClientFactory.create(anthropicProvider(server.baseUrl())), conversation, "写文件", ui, pm);
 
             SessionStore store = new SessionStore(tmp);
@@ -366,7 +366,7 @@ class AgentLoopIntegrationTest {
             Conversation restored = new Conversation(store.load("s10").orElseThrow().getMessages());
             TestUi ui2 = new TestUi();
             AgentRunner.Result r2 = run(LlmClientFactory.create(anthropicProvider(server.baseUrl())),
-                    restored, "继续", ui2, new PermissionManager(new ToolRegistry(new PathGuard(tmp))));
+                    restored, "继续", ui2, new PermissionManager(new ToolRegistry(new PathGuard(tmp), 200)));
             assertFalse(r2.error(), r2.errorMessage());
             assertEquals("done", r2.text());
             String thirdBody = server.capturedBodies().get(2);

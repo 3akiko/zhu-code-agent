@@ -4,6 +4,9 @@ import com.zhubao.agent.AgentRunner;
 import com.zhubao.agent.AgentUi;
 import com.zhubao.config.AppConfig;
 import com.zhubao.config.ProviderConfig;
+import com.zhubao.history.FileCheckpoint;
+import com.zhubao.history.FileHistory;
+import com.zhubao.history.RollbackResult;
 import com.zhubao.conversation.Conversation;
 import com.zhubao.llm.LlmClient;
 import com.zhubao.llm.LlmClientFactory;
@@ -11,11 +14,14 @@ import com.zhubao.llm.StreamEvent;
 import com.zhubao.llm.ToolSpec;
 import com.zhubao.permission.PermissionChoice;
 import com.zhubao.permission.PermissionManager;
+import com.zhubao.permission.PermissionMode;
 import com.zhubao.session.ProviderSnapshot;
 import com.zhubao.session.Session;
 import com.zhubao.session.SessionMeta;
 import com.zhubao.session.SessionStore;
 import com.zhubao.tool.PathGuard;
+import com.zhubao.tool.PlanModeExecutor;
+import com.zhubao.tool.RenderHint;
 import com.zhubao.tool.SerialToolExecutor;
 import com.zhubao.tool.ToolCall;
 import com.zhubao.tool.ToolRegistry;
@@ -53,6 +59,7 @@ public class ChatApp {
     private final PermissionManager permissionManager;
     private final SerialToolExecutor toolExecutor;
     private final List<ToolSpec> toolSpecs;
+    private final FileHistory fileHistory;
 
     private ProviderConfig provider;          // 当前 provider（含 api_key，仅内存，不落盘）
     private ProviderSnapshot providerSnapshot; // 会话记录的 provider 快照（不含 api_key）
@@ -65,10 +72,13 @@ public class ChatApp {
         this.ui = new TerminalUi();
         this.picker = new JLinePicker(ui);
         // M2：工具注册表 / 权限管理器为程序运行级（权限不落盘、退出重置）
+        // M3：文件历史（检查点快照/回滚）为程序运行级，按会话 id 隔离
         Path workspace = Path.of(System.getProperty("user.dir"));
-        this.toolRegistry = new ToolRegistry(new PathGuard(workspace));
+        PathGuard guard = new PathGuard(workspace);
+        this.toolRegistry = new ToolRegistry(guard, config.uiDiffMaxLines());
         this.permissionManager = new PermissionManager(toolRegistry);
         this.toolExecutor = new SerialToolExecutor(toolRegistry, permissionManager, null, config.uiToolPreviewLines());
+        this.fileHistory = new FileHistory(defaultSnapshotsRoot(), guard);
         this.toolSpecs = toolRegistry.all().stream()
                 .map(t -> new ToolSpec(t.name(), t.description(), t.inputSchema()))
                 .toList();
@@ -214,18 +224,36 @@ public class ChatApp {
                 }
             }
             case PERMISSIONS -> handlePermissions(line);
+            case PLAN -> handlePlan(line);
+            case UNDO -> handleUndo();
+            case REWIND -> handleRewind();
             case NONE -> ui.println("⚠ 未知命令，输入 /help 查看帮助", Ansi.ERROR);
         }
         return true;
     }
 
-    /** /permissions：查看/重置「总是允许」清单（spec F5，仅内存、退出重置） */
+    /** /permissions：查看/切换权限模式 + 查看/重置「总是允许」清单（spec F5 + M3 F4，均仅内存、退出重置） */
     private void handlePermissions(String line) {
-        if (line.trim().toLowerCase().endsWith("reset")) {
+        String cmd = line.trim().toLowerCase();
+        if (cmd.endsWith("reset")) {
             permissionManager.reset();
             ui.println("✔ 已清空「总是允许」清单", Ansi.STATUS);
             return;
         }
+        // cmd 已小写化 → modeArg 为小写，与常量小写比较
+        String modeArg = cmd.substring("/permissions".length()).trim();
+        if (modeArg.equals("normal") || modeArg.equals("acceptedits") || modeArg.equals("bypasspermissions")) {
+            PermissionMode mode = switch (modeArg) {
+                case "acceptedits" -> PermissionMode.ACCEPT_EDITS;
+                case "bypasspermissions" -> PermissionMode.BYPASS_PERMISSIONS;
+                default -> PermissionMode.NORMAL;
+            };
+            permissionManager.setMode(mode);
+            ui.println("✔ 权限模式 → " + modeLabel(mode), Ansi.STATUS);
+            return;
+        }
+        ui.println("权限模式：" + modeLabel(permissionManager.mode()) + "（仅本次运行内有效，不落盘）", Ansi.HIGHLIGHT);
+        ui.println("切换：/permissions normal | acceptEdits | bypassPermissions", Ansi.THINKING);
         List<String> list = permissionManager.allowedList();
         if (list.isEmpty()) {
             ui.println("「总是允许」清单为空（本次程序运行内未记忆任何放行）", Ansi.THINKING);
@@ -236,6 +264,14 @@ public class ChatApp {
             }
             ui.println("使用 /permissions reset 清空", Ansi.THINKING);
         }
+    }
+
+    private static String modeLabel(PermissionMode m) {
+        return switch (m) {
+            case NORMAL -> "normal（逐项确认）";
+            case ACCEPT_EDITS -> "acceptEdits（文件编辑自动批准）";
+            case BYPASS_PERMISSIONS -> "bypassPermissions（自动批准，危险命令仍确认）";
+        };
     }
 
     /** /new：保存当前会话 → 开新会话（多 provider 时重新选择；取消则恢复原会话） */
@@ -265,7 +301,7 @@ public class ChatApp {
         LlmClient client = LlmClientFactory.create(provider);
         TuiAgentUi agentUi = new TuiAgentUi();
         SerialToolExecutor executor = new SerialToolExecutor(toolRegistry, permissionManager, agentUi,
-                config.uiToolPreviewLines());
+                config.uiToolPreviewLines(), fileHistory, sessionMeta.id());
 
         AgentRunner.Result result = AgentRunner.run(client, conversation, userText,
                 toolSpecs, executor, agentUi, config.toolMaxCallsPerTurn());
@@ -273,7 +309,11 @@ public class ChatApp {
         // 清掉可能残留的步骤状态行
         agentUi.clearLeftoverStatus();
         ui.println();
+        renderResult(result);
+    }
 
+    /** 渲染一轮结果（sendAndRender 与计划执行共用） */
+    private void renderResult(AgentRunner.Result result) {
         if (result.limitReached()) {
             ui.println("⚠ 已达本轮工具调用上限（" + config.toolMaxCallsPerTurn()
                     + "），输入『继续』可开启新一轮", Ansi.ERROR);
@@ -283,6 +323,128 @@ public class ChatApp {
             ui.println("── 完成（" + result.stopReason()
                     + " · in " + result.inputTokens() + " / out " + result.outputTokens() + " tokens）", Ansi.THINKING);
         }
+    }
+
+    // ── M3：/plan 先计划后执行（spec F2）──────────────────────────────
+
+    /** /plan：单轮计划循环——runPlan → 展示 → y 执行 / d 拒绝 / 意见重新生成 */
+    private void handlePlan(String line) {
+        String task = line.trim().substring("/plan".length()).trim();
+        if (task.isEmpty()) {
+            ui.println("请输入任务描述，如 /plan 重构 xxx", Ansi.ERROR);
+            return;
+        }
+        ui.println("📋 计划模式：先产出计划，批准后才执行（只读调研）", Ansi.HIGHLIGHT);
+        boolean first = true;
+        while (true) {
+            LlmClient client = LlmClientFactory.create(provider);
+            TuiAgentUi agentUi = new TuiAgentUi();
+            PlanModeExecutor planExecutor = new PlanModeExecutor(toolRegistry, permissionManager, agentUi,
+                    config.uiToolPreviewLines());
+            AgentRunner.Result plan = first
+                    ? AgentRunner.runPlan(client, conversation, task, toolSpecs, planExecutor, agentUi,
+                            config.toolMaxCallsPerTurn(), AgentRunner.STEP_IDLE_TIMEOUT_MS)
+                    : AgentRunner.runPlanContinue(client, conversation, toolSpecs, planExecutor, agentUi,
+                            config.toolMaxCallsPerTurn(), AgentRunner.STEP_IDLE_TIMEOUT_MS);
+            first = false;
+            agentUi.clearLeftoverStatus();
+            ui.println();
+            // /plan 改变了会话（任务/调研/计划/意见/执行），各出口统一落盘（review P2-1，对齐 sendAndRender）
+            if (plan.error()) {
+                ui.println("⚠ " + plan.errorMessage(), Ansi.ERROR);
+                saveSession();
+                return;
+            }
+            if (plan.limitReached()) {
+                ui.println("⚠ 计划阶段已达工具调用上限，请重试", Ansi.ERROR);
+                saveSession();
+                return;
+            }
+            ui.println("── 计划完成，请审批 ──", Ansi.HIGHLIGHT);
+            String answer = ui.readLine(Ansi.color("[计划] 批准执行(y) / 拒绝(d) / 输入修改意见重新生成？", Ansi.HIGHLIGHT));
+            if (answer == null) {
+                ui.println("已取消，计划未执行", Ansi.THINKING);
+                saveSession();
+                return;
+            }
+            String a = answer.trim();
+            if (a.equalsIgnoreCase("y")) {
+                ui.println("✔ 已批准，开始执行…", Ansi.STATUS);
+                executePlannedTurn();
+                saveSession();
+                return;
+            }
+            if (a.equalsIgnoreCase("d")) {
+                ui.println("已拒绝计划，本轮结束（无副作用）", Ansi.THINKING);
+                saveSession();
+                return;
+            }
+            conversation.addUser("（对计划的修改意见）" + a);
+            ui.println("↻ 已收到修改意见，重新生成计划…", Ansi.THINKING);
+        }
+    }
+
+    /** 计划批准后的执行阶段：不再 addUser（会话已含任务+计划+调研） */
+    private void executePlannedTurn() {
+        LlmClient client = LlmClientFactory.create(provider);
+        TuiAgentUi agentUi = new TuiAgentUi();
+        SerialToolExecutor executor = new SerialToolExecutor(toolRegistry, permissionManager, agentUi,
+                config.uiToolPreviewLines(), fileHistory, sessionMeta.id());
+        AgentRunner.Result result = AgentRunner.runExecution(client, conversation, toolSpecs, executor, agentUi,
+                config.toolMaxCallsPerTurn(), AgentRunner.STEP_IDLE_TIMEOUT_MS);
+        agentUi.clearLeftoverStatus();
+        ui.println();
+        renderResult(result);
+    }
+
+    // ── M3：/undo /rewind（spec F3，统一检查点机制）────────────────────
+
+    /** /undo：回退最近一个检查点（快捷） */
+    private void handleUndo() {
+        renderRollback(fileHistory.undo(sessionMeta.id()));
+    }
+
+    /** /rewind：列出检查点（最新在上）选择回退 */
+    private void handleRewind() {
+        List<FileCheckpoint> list = fileHistory.list(sessionMeta.id());
+        if (list.isEmpty()) {
+            ui.println("没有可回滚的检查点", Ansi.THINKING);
+            return;
+        }
+        List<FileCheckpoint> reversed = new ArrayList<>(list);
+        java.util.Collections.reverse(reversed);
+        Optional<Integer> pick = picker.pickIndex("选择要回退到的检查点", reversed,
+                cp -> cp.timestamp().atZone(ZoneId.systemDefault()).format(TIME_FMT) + "  " + cp.summary());
+        if (pick.isEmpty()) {
+            return;
+        }
+        int index = list.size() - 1 - pick.get();
+        renderRollback(fileHistory.rewindTo(sessionMeta.id(), index));
+    }
+
+    /** 展示回滚结果并把回滚记录写回会话（spec F3：落盘后恢复可见） */
+    private void renderRollback(RollbackResult r) {
+        if (!r.ok()) {
+            ui.println("⚠ " + r.message(), Ansi.ERROR);
+            for (String a : r.actions()) {
+                ui.println("  " + a, Ansi.THINKING);
+            }
+            return;
+        }
+        ui.println("✔ " + r.message(), Ansi.STATUS);
+        for (String a : r.actions()) {
+            ui.println("  " + a, Ansi.THINKING);
+        }
+        String record = "[回滚] " + r.message();
+        if (!r.actions().isEmpty()) {
+            record += "（" + String.join("；", r.actions()) + "）";
+        }
+        conversation.addUser(record);
+        saveSession();
+    }
+
+    private static Path defaultSnapshotsRoot() {
+        return Path.of(System.getProperty("user.home"), ".zhu-code-agent", "snapshots");
     }
 
     /** Agent 循环的 TUI 回调（spec F10：每步状态行/工具摘要/结果预览/行内权限确认） */
@@ -322,7 +484,37 @@ public class ChatApp {
         @Override
         public void onToolResult(ToolResult result, int previewLines) {
             breakThinkingLine();
-            ui.println(resultPreview(result, previewLines), Ansi.THINKING);
+            if (result.renderHint() == RenderHint.FULL) {
+                // M3 spec F1：diff 完整彩色展示（+ 绿 / - 红 / @@ 亮青）
+                ui.println("└ " + result.name() + " → " + coloredDiff(result.output()), null);
+            } else {
+                ui.println(resultPreview(result, previewLines), Ansi.THINKING);
+            }
+        }
+
+        /** diff 行彩色渲染（spec F1）：行首 + → 绿（STATUS）、- → 红（ERROR）、@@ → 亮青（HIGHLIGHT） */
+        private String coloredDiff(String text) {
+            if (text == null) {
+                return "";
+            }
+            StringBuilder sb = new StringBuilder();
+            String[] lines = text.split("\n", -1);
+            for (int i = 0; i < lines.length; i++) {
+                if (i > 0) {
+                    sb.append('\n');
+                }
+                String l = lines[i];
+                if (l.startsWith("+")) {
+                    sb.append(Ansi.color(l, Ansi.STATUS));
+                } else if (l.startsWith("-")) {
+                    sb.append(Ansi.color(l, Ansi.ERROR));
+                } else if (l.startsWith("@@")) {
+                    sb.append(Ansi.color(l, Ansi.HIGHLIGHT));
+                } else {
+                    sb.append(l);
+                }
+            }
+            return sb.toString();
         }
 
         /** 若当前行还是思考灰字，先换行再输出其他内容 */

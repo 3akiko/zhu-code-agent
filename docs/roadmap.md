@@ -47,8 +47,9 @@
 - **验收入口**：M2 的 `docs/spec.md`（届时新建）。
 
 ### M3 文件编辑增强与 Plan Mode（P0）
+- **状态**：✅ 已完成（2026-08-09），四文档归档 `docs/milestones/m3/`，验收报告 `docs/验收报告-M3.md`，真机 demo `docs/demo-M3文件编辑与PlanMode.md`（已实测通过）。
 - **目标**：让文件修改"看得见、可反悔、可先规划"。
-- **包含**：`edit_file` 变更 diff 展示；`/plan` 模式（先产出计划，用户批准后才执行）；文件历史快照与回滚（rewind）；权限模式演进（acceptEdits / bypassPermissions 等）。
+- **包含**：`edit_file` 变更 diff 展示；`/plan` 模式（先产出计划，用户批准后才执行，支持修改意见重新生成）；文件历史快照与回滚（undo/rewind，跨会话）；权限模式演进（acceptEdits / bypassPermissions 三档，安全红线不削弱）。
 - **验收入口**：M3 的 `docs/spec.md`。
 
 ### M4 上下文管理（P1）
@@ -74,20 +75,21 @@
 
 ## 5. 特性对比表（随实现更新）
 
-> 现状 = M1 已完成（2026-08-07）。每完成一个里程碑回填一列并标注完成日期。
+> 现状 = M3 已完成（2026-08-09）。每完成一个里程碑回填一列并标注完成日期。
 
-| 功能维度 | zhuCodeAgent（M1） | zhuCodeAgent（M2，2026-08-08） | Claude Code | Codex CLI |
-|----------|---------------------|------------------------------|-----------|------------|
-| 交互界面 | ✅ 已完成（M1）：JLine3+ANSI 彩色 TUI | ✅ 沿用 M1（每 agent 步骤状态行） | Ink(React) 全屏 TUI | 类 TUI + 状态行 |
-| 流式输出 | ✅ 已完成（M1）：SSE 增量实时打印 | ✅ 沿用 M1 | 有 | 有 |
-| 多后端 | ✅ 已完成（M1）：anthropic / openai | ✅ 沿用 M1 | Anthropic 为主 | OpenAI 为主 |
-| extended thinking | ✅ 已完成（M1）：灰色小字展示 + 多轮回传 | ✅ 沿用 M1 | 有（可展开） | 有（reasoning） |
-| 工具调用 | 未做 | ✅ 已完成：6 内置工具 + Agent 循环 + 双协议 | 有 | 有 |
-| 权限控制 | 未做 | ✅ 部分：只读自动 + 写类/bash 行内确认 + 总是允许（内存）；acceptEdits/bypass 留 M3 | 有（plan/acceptEdits/bypass） | 有（plan/auto） |
-| 会话恢复 | ✅ 已完成（M1）：启动选择恢复 | ✅ 工具消息随会话落盘，恢复后循环上下文完整 | 有（--resume/--continue） | 有（--resume/--continue） |
-| 上下文管理 | 未做 | 未做（M4） | 有（auto-compact） | 有（--compact） |
-| MCP / Subagents / Hooks | 未做 | 未做（M5+） | 有 | 部分 |
-| 技术栈 | Java 21 | Java 21（同左） | TypeScript/Node | Rust |
+| 功能维度 | zhuCodeAgent（M1） | zhuCodeAgent（M2，2026-08-08） | zhuCodeAgent（M3，2026-08-09） | Claude Code | Codex CLI |
+|----------|---------------------|------------------------------|------------------------------|-----------|------------|
+| 交互界面 | ✅ 已完成（M1）：JLine3+ANSI 彩色 TUI | ✅ 沿用 M1（每 agent 步骤状态行） | ✅ 沿用 M2 | Ink(React) 全屏 TUI | 类 TUI + 状态行 |
+| 流式输出 | ✅ 已完成（M1）：SSE 增量实时打印 | ✅ 沿用 M1 | ✅ 沿用 M1 | 有 | 有 |
+| 多后端 | ✅ 已完成（M1）：anthropic / openai | ✅ 沿用 M1 | ✅ 沿用 M1 | Anthropic 为主 | OpenAI 为主 |
+| extended thinking | ✅ 已完成（M1）：灰色小字展示 + 多轮回传 | ✅ 沿用 M1 | ✅ 沿用 M1 | 有（可展开） | 有（reasoning） |
+| 工具调用 | 未做 | ✅ 已完成：6 内置工具 + Agent 循环 + 双协议 | ✅ 沿用 M2 | 有 | 有 |
+| 权限控制 | 未做 | ✅ 部分：只读自动 + 写类/bash 行内确认 + 总是允许（内存） | ✅ 三档模式：normal / acceptEdits / bypassPermissions（危险命令仍强制确认，红线不削弱） | 有（plan/acceptEdits/bypass） | 有（plan/auto） |
+| diff 展示 / undo 回滚 | 未做 | 未做（留 M3） | ✅ diff 内嵌彩色展示 + 全量快照 /undo /rewind（跨会话） | 有（FileSnapshotService 快照） | diff 高亮；回滚靠 git |
+| 会话恢复 | ✅ 已完成（M1）：启动选择恢复 | ✅ 工具消息随会话落盘，恢复后循环上下文完整 | ✅ 沿用 M2（快照按会话隔离） | 有（--resume/--continue） | 有（--resume/--continue） |
+| 上下文管理 | 未做 | 未做（M4） | 未做（M4） | 有（auto-compact） | 有（--compact） |
+| MCP / Subagents / Hooks | 未做 | 未做（M5+） | 未做（M5+） | 有 | 部分 |
+| 技术栈 | Java 21 | Java 21（同左） | Java 21（同左） | TypeScript/Node | Rust |
 
 ## 6. 文档与记录规范
 

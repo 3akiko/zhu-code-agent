@@ -217,6 +217,7 @@ class ConfigLoaderTest {
         AppConfig cfg = ConfigLoader.load(p.toString(), Map.of());
         assertEquals(AppConfig.DEFAULT_TOOL_MAX_CALLS_PER_TURN, cfg.toolMaxCallsPerTurn());
         assertEquals(AppConfig.DEFAULT_UI_TOOL_PREVIEW_LINES, cfg.uiToolPreviewLines());
+        assertEquals(AppConfig.DEFAULT_UI_DIFF_MAX_LINES, cfg.uiDiffMaxLines());
     }
 
     @Test
@@ -230,10 +231,12 @@ class ConfigLoaderTest {
                   max_calls_per_turn: 30
                 ui:
                   tool_preview_lines: 8
+                  diff_max_lines: 300
                 """);
         AppConfig cfg = ConfigLoader.load(p.toString(), Map.of());
         assertEquals(30, cfg.toolMaxCallsPerTurn());
         assertEquals(8, cfg.uiToolPreviewLines());
+        assertEquals(300, cfg.uiDiffMaxLines());
     }
 
     @Test
