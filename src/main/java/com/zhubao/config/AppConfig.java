@@ -15,7 +15,8 @@ public record AppConfig(
         List<ProviderConfig> providers,
         Path sessionsDir,
         int toolMaxCallsPerTurn,
-        int uiToolPreviewLines) {
+        int uiToolPreviewLines,
+        int uiDiffMaxLines) {
 
     /** 会话目录默认值：~/.zhu-code-agent/sessions */
     public static Path defaultSessionsDir() {
@@ -27,4 +28,7 @@ public record AppConfig(
 
     /** 工具结果预览行数默认值 */
     public static final int DEFAULT_UI_TOOL_PREVIEW_LINES = 5;
+
+    /** diff 展示最大行数默认值（M3，spec N1） */
+    public static final int DEFAULT_UI_DIFF_MAX_LINES = 200;
 }

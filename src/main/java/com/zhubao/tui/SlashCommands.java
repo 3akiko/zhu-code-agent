@@ -1,13 +1,13 @@
 package com.zhubao.tui;
 
 /**
- * 斜杠命令（spec F8）：/help /exit /clear。
+ * 斜杠命令（spec F8 + M3 F2/F3）：/help /exit /clear /new /permissions /plan /undo /rewind。
  * 只负责识别与分类，具体输出与副作用由 ChatApp 执行。
  */
 public final class SlashCommands {
 
     /** 命令处理结果 */
-    public enum Action { NONE, HELP, EXIT, CLEAR, NEW, PERMISSIONS }
+    public enum Action { NONE, HELP, EXIT, CLEAR, NEW, PERMISSIONS, PLAN, UNDO, REWIND }
 
     private SlashCommands() {
     }
@@ -28,10 +28,15 @@ public final class SlashCommands {
             case "/exit", "/quit" -> Action.EXIT;
             case "/clear" -> Action.CLEAR;
             case "/new" -> Action.NEW;
+            case "/undo" -> Action.UNDO;
+            case "/rewind" -> Action.REWIND;
             default -> {
-                // /permissions 支持带参数（如 /permissions reset），按前缀识别
+                // 带参数命令按前缀识别：/permissions [reset|模式]、/plan <任务>
                 if (cmd.equals("/permissions") || cmd.startsWith("/permissions ")) {
                     yield Action.PERMISSIONS;
+                }
+                if (cmd.equals("/plan") || cmd.startsWith("/plan ")) {
+                    yield Action.PLAN;
                 }
                 yield Action.NONE;
             }

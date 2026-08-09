@@ -107,6 +107,47 @@ AgentRunner（agent 包）          消息循环：stream → 事件累积 → �
 3. **macOS /var↔/private/var**：PathGuard 根目录与候选路径统一 realpath 比较，规避平台符号链接误判越界。
 4. **Java 文本块转义**：mock SSE 里 partial_json 的 `\"` 在文本块中会被转义吃掉一层，wire 层 JSON 非法。→ fixture 用 `\\"` 保留反斜杠。
 
+## M3 文件编辑增强与 Plan Mode
+
+- 状态：已完成（2026-08-09）
+- 对应归档：`docs/milestones/m3/`；验收报告 `docs/验收报告-M3.md`；真机 demo `docs/demo-M3文件编辑与PlanMode.md`（已实测通过）
+
+### 实现了什么
+
+- **diff 展示**：`diff/DiffGenerator`（公共前缀/后缀 + 中间变更块，零依赖）——`edit_file`/`write_file` 结果内嵌 diff（`-` 红 / `+` 绿 / `@@` 亮青），TUI 按 `ToolResult.renderHint`（FULL/PREVIEW）完整展示、`ui.diff_max_lines`（默认 200）超长截断标注、diff 随 tool_result 落盘恢复可见。
+- **`/plan` 先计划后执行**：`AgentRunner.runPlan/runPlanContinue/runExecution` + `PlanModeExecutor`（计划阶段只读，write/edit/bash 拦截回填错误、零副作用）；模型 end_turn 即计划完成、最终文本即计划；审批 `y` 执行（写仍按权限模式确认）/ `d` 拒绝 / **任意文本修改意见重新生成**（变更控制 2026-08-09）。
+- **快照回滚**：`history/FileHistory` + `FileCheckpoint`——每次 write/edit 前把文件完整内容快照落盘 `~/.zhu-code-agent/snapshots/<会话ID>/checkpoints.json`（原子写、损坏跳过）；`/undo` 回退最近检查点、`/rewind` 列表回退（统一机制、跨会话）；回滚动作 `[回滚]` 写回会话；bash 副作用不追踪；>10MB 文件跳过快照并注明。
+- **权限模式演进**：`permission/PermissionMode`（normal / acceptEdits / bypassPermissions），`/permissions` 切换；acceptEdits 写文件自动批准、bypass bash 非危险自动批准；**危险命令强制确认、cwd 外破坏性命令拒绝、禁写目录等 M2 红线不削弱**；仅内存、退出重置。
+- 配置：`ui.diff_max_lines`（默认 200）。
+- 测试：170 个全绿（+43），含脚本化 LLM 端到端（计划批准/拒绝、三权限模式、undo/rewind 跨会话真实回滚）与真机 demo ①–⑥ 全流程实测。
+
+### 怎么实现的（关键设计）
+
+- **全量快照而非补丁**：检查点存修改前完整内容，回滚 = 直接写回（`FileHistory.rewindTo` 按检查点倒序恢复 + `subList` 截断丢弃）；`DiffGenerator` 只负责展示，回滚不依赖 diff。
+- **单轮计划闭环**：`/plan` = 一个受约束的 agent 循环（`PlanModeExecutor` 拦截写类），模型 end_turn 即计划完成；批准后 `runExecution` 不重复 addUser——`runLoop` 的 `addUser` 开关让同一循环服务"新输入/计划/续计划/执行"四种形态。
+- **语义化渲染**：`ToolResult.renderHint`（FULL/PREVIEW）——UI 按语义标记渲染而非按工具名分支；renderHint 只存在于内存对象，落盘走 `ToolResultBlock`，会话 JSON 格式不变。
+- **统一检查点机制**：`/undo` = `/rewind` 到最近检查点（一套落盘存储、两个命令入口），跨会话有效。
+- **安全不削弱**：权限模式只影响"是否询问"，危险命令强制确认与 cwd 外拒绝仍由 `DangerGuard`/`PathGuard` 兜底；计划阶段拦截先于执行，零副作用。
+
+### 与 Claude Code / Codex 的对比（M3）
+
+| 维度 | zhuCodeAgent（M3） | Claude Code / Codex |
+|------|--------------------|--------------------|
+| diff 展示 | ✅ 结果内嵌轻量 diff + 彩色 + 超长截断 + 落盘 | ✅ 块级 diff 可展开（CC）；diff 高亮（Codex） |
+| /plan 先计划后执行 | ✅ 单轮计划 + 审批 y/d + 修改意见重新生成（只读调研） | ✅ plan mode（CC 可多轮对话） |
+| undo / rewind | ✅ 全量快照 + 跨会话（对齐 CC 的 FileSnapshotService 思路） | ✅ CC 有；Codex 靠 git 回滚 |
+| 权限模式 | ✅ acceptEdits / bypassPermissions 三档（危险仍强制确认） | ✅ plan/acceptEdits/bypass |
+| 交互式结果展开/收缩 | ❌ M3+ | ✅ CC 有 |
+
+### 踩坑记录（M3）
+
+1. **权限模式命令大小写**：`handlePermissions` 将命令整体小写化后与驼峰常量比较 → 永不匹配、`/permissions acceptEdits` 被当查看 → 统一小写比较（真机冒烟发现）。
+2. **diff 纯换行差异不可见**：`splitLines` 丢弃结尾空行 → 仅增删末尾换行的 edit 显示为空 diff → 保留结尾空行（review P2-3）。
+3. **覆写大文件全量读内存**：`WriteFileTool` 覆写前无上限 `readString` 旧内容（绕过 10MB 快照上限）→ 超 10MB 跳过 diff（review P2-2）。
+4. **快照双重全量读取**：`nextId` + `append` 各读一次 checkpoints.json → 合并为一次 load（review P3）。
+5. **/plan 不落盘**：handlePlan 各出口未 saveSession → 统一补齐（review P2-1）。
+
+
 ## 路径校验细则（PathGuard / DangerGuard）
 
 > 2026-08-08 补充（review 后文档化，含两处修复：tool_use 参数往返、rm -rf shell 展开拒绝）。

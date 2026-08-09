@@ -71,7 +71,7 @@ class StreamingIntegrationTest {
 
     /** 在临时工作区运行一轮 agent 循环 */
     private AgentRunner.Result run(LlmClient client, Conversation conversation, String userText, NoopUi ui) {
-        ToolRegistry registry = new ToolRegistry(new PathGuard(tmp));
+        ToolRegistry registry = new ToolRegistry(new PathGuard(tmp), 200);
         PermissionManager pm = new PermissionManager(registry);
         SerialToolExecutor executor = new SerialToolExecutor(registry, pm, ui, 5);
         List<ToolSpec> specs = registry.all().stream()

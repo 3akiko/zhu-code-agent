@@ -3,7 +3,9 @@ package com.zhubao.tool.builtin;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.zhubao.diff.DiffGenerator;
 import com.zhubao.tool.PathGuard;
+import com.zhubao.tool.RenderHint;
 import com.zhubao.tool.Tool;
 import com.zhubao.tool.ToolCall;
 import com.zhubao.tool.ToolException;
@@ -18,14 +20,17 @@ import java.util.Map;
 /**
  * edit_file：精确字符串替换（old_string → new_string，spec F2）。
  * 要求唯一匹配：未找到 / 多匹配均返回可读错误，模型调整后重试。
+ * M3（spec F1）：成功后结果内嵌变更 diff（renderHint=FULL，UI 完整彩色展示）。
  */
 public final class EditFileTool implements Tool {
 
     private final PathGuard guard;
+    private final DiffGenerator diff;
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    public EditFileTool(PathGuard guard) {
+    public EditFileTool(PathGuard guard, DiffGenerator diff) {
         this.guard = guard;
+        this.diff = diff;
     }
 
     @Override
@@ -75,7 +80,9 @@ public final class EditFileTool implements Tool {
             }
             String updated = content.replace(oldString, newString);
             Files.writeString(target, updated, StandardCharsets.UTF_8);
-            return ToolResult.ok(call, "已替换 1 处 → " + target);
+            String diffText = diff.diff(content, updated);
+            String out = "已替换 1 处 → " + target + (diffText.isEmpty() ? "" : "\n" + diffText);
+            return ToolResult.ok(call, out, RenderHint.FULL);
         } catch (ToolException e) {
             return ToolResult.error(call, e.getMessage());
         } catch (IOException e) {

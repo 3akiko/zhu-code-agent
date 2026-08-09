@@ -33,3 +33,4 @@ tool:
   max_calls_per_turn: 60     # 单轮（一次用户输入）最多工具调用次数；到达后停止本轮并提示可继续
 ui:
   tool_preview_lines: 5      # 工具结果在终端的预览行数（超出显示「…已截断，共 N 行」）
+  diff_max_lines: 200        # M3：write/edit 结果内嵌 diff 的最大展示行数（超出截断并标注）

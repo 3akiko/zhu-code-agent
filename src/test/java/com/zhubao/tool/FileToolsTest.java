@@ -1,5 +1,6 @@
 package com.zhubao.tool;
 
+import com.zhubao.diff.DiffGenerator;
 import com.zhubao.tool.builtin.EditFileTool;
 import com.zhubao.tool.builtin.GlobTool;
 import com.zhubao.tool.builtin.GrepTool;
@@ -56,20 +57,26 @@ class FileToolsTest {
 
     @Test
     void writeFileCreatesAndOverwrites() throws Exception {
-        WriteFileTool tool = new WriteFileTool(new PathGuard(ws));
+        WriteFileTool tool = new WriteFileTool(new PathGuard(ws), new DiffGenerator(200));
         ToolResult r1 = tool.execute(call("write_file", Map.of("path", "dir/n.txt", "content", "hello")));
         assertFalse(r1.isError(), r1.output());
         assertEquals("hello", Files.readString(ws.resolve("dir/n.txt")));
+        assertTrue(r1.output().contains("已创建"), r1.output());
+        assertTrue(r1.output().contains("1 行 / 5 字节"), r1.output());
 
         ToolResult r2 = tool.execute(call("write_file", Map.of("path", "dir/n.txt", "content", "world")));
         assertFalse(r2.isError(), r2.output());
         assertEquals("world", Files.readString(ws.resolve("dir/n.txt")));
+        assertTrue(r2.output().contains("已覆写"), r2.output());
+        assertTrue(r2.output().contains("+world"), r2.output());
+        assertTrue(r2.output().contains("-hello"), r2.output());
+        assertEquals(RenderHint.FULL, r2.renderHint());
     }
 
     @Test
     void writeFileToGitDirRejected() throws Exception {
         Files.createDirectories(ws.resolve(".git"));
-        ToolResult r = new WriteFileTool(new PathGuard(ws)).execute(call("write_file", Map.of("path", ".git/config", "content", "x")));
+        ToolResult r = new WriteFileTool(new PathGuard(ws), new DiffGenerator(200)).execute(call("write_file", Map.of("path", ".git/config", "content", "x")));
         assertTrue(r.isError());
         assertTrue(r.output().contains(".git"));
         assertFalse(Files.exists(ws.resolve(".git/config")));
@@ -78,16 +85,19 @@ class FileToolsTest {
     @Test
     void editFileUniqueReplace() throws Exception {
         Files.writeString(ws.resolve("a.txt"), "foo bar foo");
-        ToolResult r = new EditFileTool(new PathGuard(ws)).execute(call("edit_file",
+        ToolResult r = new EditFileTool(new PathGuard(ws), new DiffGenerator(200)).execute(call("edit_file",
                 Map.of("path", "a.txt", "old_string", "bar", "new_string", "BAZ")));
         assertFalse(r.isError(), r.output());
         assertEquals("foo BAZ foo", Files.readString(ws.resolve("a.txt")));
+        assertTrue(r.output().contains("-foo bar foo"), r.output());
+        assertTrue(r.output().contains("+foo BAZ foo"), r.output());
+        assertEquals(RenderHint.FULL, r.renderHint());
     }
 
     @Test
     void editFileNotFoundReturnsReadableError() throws Exception {
         Files.writeString(ws.resolve("a.txt"), "hello");
-        ToolResult r = new EditFileTool(new PathGuard(ws)).execute(call("edit_file",
+        ToolResult r = new EditFileTool(new PathGuard(ws), new DiffGenerator(200)).execute(call("edit_file",
                 Map.of("path", "a.txt", "old_string", "zzz", "new_string", "x")));
         assertTrue(r.isError());
         assertTrue(r.output().contains("未找到"));
@@ -96,7 +106,7 @@ class FileToolsTest {
     @Test
     void editFileMultipleMatchesRejected() throws Exception {
         Files.writeString(ws.resolve("a.txt"), "abc abc abc");
-        ToolResult r = new EditFileTool(new PathGuard(ws)).execute(call("edit_file",
+        ToolResult r = new EditFileTool(new PathGuard(ws), new DiffGenerator(200)).execute(call("edit_file",
                 Map.of("path", "a.txt", "old_string", "abc", "new_string", "x")));
         assertTrue(r.isError());
         assertTrue(r.output().contains("不唯一"));
@@ -136,5 +146,20 @@ class FileToolsTest {
         assertTrue(r.output().contains("src/main/java/A.java"));
         assertTrue(r.output().contains("src/main/B.java"));
         assertFalse(r.output().contains("README.md"));
+    }
+
+    @Test
+    void writeOverwriteOversizeSkipsDiff() throws Exception {
+        byte[] big = new byte[11 * 1024 * 1024];
+        java.util.Arrays.fill(big, (byte) 'x');
+        Files.write(ws.resolve("big.txt"), big);
+        WriteFileTool tool = new WriteFileTool(new PathGuard(ws), new DiffGenerator(200));
+        ToolResult r = tool.execute(call("write_file", Map.of("path", "big.txt", "content", "small")));
+        assertFalse(r.isError(), r.output());
+        assertEquals("small", Files.readString(ws.resolve("big.txt")));
+        assertTrue(r.output().contains("已覆写"), r.output());
+        assertTrue(r.output().contains("跳过 diff"), r.output());
+        assertFalse(r.output().contains("+small"), "大文件不应生成 diff 行");
+        assertEquals(RenderHint.PREVIEW, r.renderHint());
     }
 }

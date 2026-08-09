@@ -111,7 +111,8 @@ public class ConfigLoader {
 
         int toolMaxCalls = nestedInt(map, "tool", "max_calls_per_turn", AppConfig.DEFAULT_TOOL_MAX_CALLS_PER_TURN);
         int uiPreviewLines = nestedInt(map, "ui", "tool_preview_lines", AppConfig.DEFAULT_UI_TOOL_PREVIEW_LINES);
-        return new AppConfig(List.copyOf(providers), sessionsDir, toolMaxCalls, uiPreviewLines);
+        int uiDiffMaxLines = nestedInt(map, "ui", "diff_max_lines", AppConfig.DEFAULT_UI_DIFF_MAX_LINES);
+        return new AppConfig(List.copyOf(providers), sessionsDir, toolMaxCalls, uiPreviewLines, uiDiffMaxLines);
     }
 
     /** 读取嵌套映射中的整数（如 tool.max_calls_per_turn）；缺失/非正整数 → 默认值 */

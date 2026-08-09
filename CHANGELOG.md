@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+### Added（M3：文件编辑增强与 Plan Mode，2026-08-09）
+- diff 展示：`edit_file` / `write_file` 结果内嵌变更 diff（+ 绿 / - 红 / @@ 亮青），TUI 完整展示、`ui.diff_max_lines`（默认 200）超长截断标注，diff 随会话落盘恢复可见。
+- `/plan` 先计划后执行：计划阶段只读调研（write/edit/bash 被拦截、零副作用），模型 end_turn 即计划完成；审批 `y` 执行（写仍按权限模式确认）/ `d` 拒绝 / **任意文本修改意见重新生成**（变更控制 2026-08-09）。
+- 快照回滚：write/edit 前全量快照落盘 `~/.zhu-code-agent/snapshots/<会话ID>/checkpoints.json`；`/undo` 撤销最近检查点、`/rewind` 列表回退（统一机制、跨会话）；回滚记录写回会话；bash 副作用不追踪；>10MB 文件跳过快照。
+- 权限模式演进：`/permissions normal|acceptEdits|bypassPermissions`——acceptEdits 写文件自动批准、bypass bash 非危险自动批准；危险命令仍强制确认、cwd 外破坏性命令仍拒绝、禁写目录不变（红线不削弱）；仅内存、退出重置。
+- 配置：`ui.diff_max_lines`（默认 200）。
+- 测试：170 个（+43：diff / 快照回滚 / 权限模式 / 计划循环 / mock 端到端 / 真机 demo 全流程）。
+
+### Fixed（M3）
+- 权限模式参数大小写不匹配（`/permissions acceptEdits` 被误当查看）→ 小写比较（真机冒烟发现）。
+- `/plan` 各出口未保存会话 → 统一 saveSession（review P2-1）。
+- `WriteFileTool` 覆写无上限读取旧文件（大文件全量入内存）→ 10MB 上限跳过 diff（review P2-2）。
+- `DiffGenerator` 仅增删末尾换行的变更 diff 为空 → 保留结尾空行（review P2-3）。
+- `FileHistory` 每次快照双重全量读取 checkpoints.json → 合并为一次（review P3）。
+
+### Changed（M3）
+- `AgentRunner` 抽 `runLoop`（systemPrompt + addUser 开关），新增 `runPlan` / `runPlanContinue` / `runExecution`。
+- `ToolResult` 增加 `renderHint`（FULL/PREVIEW）语义标记，UI 按标记渲染（会话 JSON 格式不变）。
+- `SerialToolExecutor` 增加写前快照钩子（成功保持 / 失败丢弃），`ToolExecutor` 接口不变（M5 并行扩展点保留）。
+
 ### Added（M2：Agent 循环与 Tool Use，2026-08-08）
 - Agent 循环（ReAct）：模型输出工具调用 → 权限确认 → 执行 → 结果回填 → 循环直到 end_turn；同一 assistant 消息的多个工具调用串行执行、一次性回填。
 - 内置 6 工具：`read_file`（支持 offset/limit 行范围）、`write_file`、`edit_file`（精确字符串替换，唯一匹配）、`bash`（cwd、无 stdin、30s 超时、200KB 输出截断）、`grep`、`glob`。

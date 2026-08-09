@@ -5,8 +5,10 @@ import com.zhubao.llm.ChatRequest;
 import com.zhubao.llm.LlmClient;
 import com.zhubao.llm.StreamEvent;
 import com.zhubao.llm.ToolSpec;
+import com.zhubao.tool.PlanModeExecutor;
 import com.zhubao.tool.SerialToolExecutor;
 import com.zhubao.tool.ToolCall;
+import com.zhubao.tool.ToolExecutor;
 import com.zhubao.tool.ToolResult;
 
 import java.util.ArrayList;
@@ -15,7 +17,8 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Agent 循环（M2，spec F1/F7）：一次用户输入 = 多步 LLM 调用 + 工具执行。
+ * Agent 循环（M2，spec F1/F7；M3 扩展 runPlan/runPlanContinue/runExecution，spec F2）：
+ * 一次用户输入 = 多步 LLM 调用 + 工具执行。
  *
  * <pre>
  * addUser → 步循环（≤ maxCallsPerTurn）:
@@ -26,6 +29,10 @@ import java.util.concurrent.TimeUnit;
  *
  * 护栏：单步流空闲超时 120s（连续无事件才中断，宽容长思考）；步数上限防失控；
  * 整轮不设墙钟。与 TUI 解耦（AgentUi 回调），便于测试。
+ *
+ * M3 /plan：计划阶段用 PLAN_SYSTEM_PROMPT + {@link PlanModeExecutor}（只读调研，
+ * 模型 end_turn 即计划完成，最终文本即计划）；批准后 runExecution 不再重复 addUser；
+ * 修改意见后 runPlanContinue 同样不重复 addUser。
  */
 public final class AgentRunner {
 
@@ -36,6 +43,15 @@ public final class AgentRunner {
                     + "and run shell commands in the project workspace. "
                     + "Use tools when they help complete the task; answer concisely. "
                     + "Today's date is " + java.time.LocalDate.now() + ".";
+
+    /** 计划模式系统提示词（M3，spec F2）：只读调研后输出分步计划并结束 */
+    public static final String PLAN_SYSTEM_PROMPT =
+            "You are zhuCodeAgent in PLAN MODE. The user wants a plan BEFORE any changes are made. "
+                    + "You may use read-only tools (read_file, grep, glob) to research the codebase. "
+                    + "Do NOT call write_file, edit_file, or bash — they are blocked in plan mode. "
+                    + "When you have finished researching, output the execution plan as your final text: "
+                    + "a concise step-by-step list of the changes you will make and why. "
+                    + "Then stop (end_turn). Today's date is " + java.time.LocalDate.now() + ".";
 
     /** 单步流空闲超时：该步开始后连续无事件 N 毫秒 → 中断该步（spec F7） */
     public static final long STEP_IDLE_TIMEOUT_MS = 120_000;
@@ -58,17 +74,7 @@ public final class AgentRunner {
             boolean limitReached) {
     }
 
-    /**
-     * 执行一轮 agent 循环。
-     *
-     * @param client         LLM 客户端
-     * @param conversation   会话（追加用户消息与工具消息）
-     * @param userText       用户输入
-     * @param tools          工具定义（请求体注入）
-     * @param executor       串行执行器（内含权限判定）
-     * @param ui             UI 回调（可为 null，测试用）
-     * @param maxCallsPerTurn 单轮工具调用上限（spec F7）
-     */
+    /** 普通一轮（addUser + NORMAL 提示词） */
     public static Result run(LlmClient client, Conversation conversation, String userText,
                              List<ToolSpec> tools, SerialToolExecutor executor,
                              AgentUi ui, int maxCallsPerTurn) {
@@ -79,7 +85,47 @@ public final class AgentRunner {
     public static Result run(LlmClient client, Conversation conversation, String userText,
                              List<ToolSpec> tools, SerialToolExecutor executor,
                              AgentUi ui, int maxCallsPerTurn, long stepIdleTimeoutMs) {
-        conversation.addUser(userText);
+        return runLoop(client, conversation, userText, tools, executor, ui,
+                maxCallsPerTurn, stepIdleTimeoutMs, SYSTEM_PROMPT, true);
+    }
+
+    /** /plan 计划阶段：addUser + PLAN 提示词 + 只读受限执行器（spec F2） */
+    public static Result runPlan(LlmClient client, Conversation conversation, String userText,
+                                 List<ToolSpec> tools, PlanModeExecutor executor, AgentUi ui,
+                                 int maxCallsPerTurn, long stepIdleTimeoutMs) {
+        return runLoop(client, conversation, userText, tools, executor, ui,
+                maxCallsPerTurn, stepIdleTimeoutMs, PLAN_SYSTEM_PROMPT, true);
+    }
+
+    /** 修改意见后重新生成计划：不再 addUser（会话已含任务+调研+旧计划+意见） */
+    public static Result runPlanContinue(LlmClient client, Conversation conversation,
+                                         List<ToolSpec> tools, PlanModeExecutor executor, AgentUi ui,
+                                         int maxCallsPerTurn, long stepIdleTimeoutMs) {
+        return runLoop(client, conversation, null, tools, executor, ui,
+                maxCallsPerTurn, stepIdleTimeoutMs, PLAN_SYSTEM_PROMPT, false);
+    }
+
+    /** 批准后执行阶段：不再 addUser（会话已含 user+计划+调研结果），正常循环 */
+    public static Result runExecution(LlmClient client, Conversation conversation,
+                                      List<ToolSpec> tools, SerialToolExecutor executor, AgentUi ui,
+                                      int maxCallsPerTurn, long stepIdleTimeoutMs) {
+        return runLoop(client, conversation, null, tools, executor, ui,
+                maxCallsPerTurn, stepIdleTimeoutMs, SYSTEM_PROMPT, false);
+    }
+
+    /**
+     * 统一循环实现。
+     *
+     * @param addUser true 时先 conversation.addUser(userText)（普通 run 与首轮 runPlan）；
+     *                false 表示用户消息已存在（runExecution / runPlanContinue）
+     */
+    private static Result runLoop(LlmClient client, Conversation conversation, String userText,
+                                  List<ToolSpec> tools, ToolExecutor executor, AgentUi ui,
+                                  int maxCallsPerTurn, long stepIdleTimeoutMs,
+                                  String systemPrompt, boolean addUser) {
+        if (addUser) {
+            conversation.addUser(userText);
+        }
         int steps = 0;
         String stopReason = "";
         int inputTokens = 0;
@@ -92,7 +138,7 @@ public final class AgentRunner {
             if (ui != null) {
                 ui.onStep("⏳ 正在思考…");
             }
-            StepOutcome outcome = consumeStep(client, conversation, tools, ui, stepIdleTimeoutMs);
+            StepOutcome outcome = consumeStep(client, conversation, tools, systemPrompt, ui, stepIdleTimeoutMs);
             if (outcome.errorMessage != null) {
                 return new Result(outcome.text, outcome.thinking, outcome.signature, true,
                         outcome.errorMessage, outcome.stopReason, outcome.inputTokens, outcome.outputTokens, false);
@@ -116,9 +162,10 @@ public final class AgentRunner {
 
     /** 一步：调 LLM、消费事件，返回该步文本/思考/工具调用与结束信息 */
     private static StepOutcome consumeStep(LlmClient client, Conversation conversation,
-                                           List<ToolSpec> tools, AgentUi ui, long stepIdleTimeoutMs) {
+                                           List<ToolSpec> tools, String systemPrompt,
+                                           AgentUi ui, long stepIdleTimeoutMs) {
         BlockingQueue<StreamEvent> queue =
-                client.stream(conversation.buildRequest(SYSTEM_PROMPT, tools));
+                client.stream(conversation.buildRequest(systemPrompt, tools));
         StringBuilder text = new StringBuilder();
         StringBuilder thinking = new StringBuilder();
         String signature = null;
