@@ -1,7 +1,7 @@
 状态：approved
 # zhuCodeAgent 路线图（Roadmap）
 
-> 最后更新：2026-08-07（M1 规划阶段，含会话持久化调整）
+> 最后更新：2026-08-09（M3 完成：文件编辑增强与 Plan Mode；新增里程碑收尾检查清单，防 README 等文档漏更）
 > 本文件是产品级地图：里程碑、优先级、扩展清单、与主流 Coding Agent 的对比追踪。
 > 每个里程碑的详细需求/设计/任务/验收分别落在 `docs/spec.md` / `docs/plan.md` / `docs/task.md` / `docs/checklist.md`（四文档流程，见文末「文档与记录规范」）。
 
@@ -70,6 +70,7 @@
 - 非交互模式（`-p "prompt"` 一次性输出）与 remote/Web 模式（参考 mewcode 的 Javalin 远程模式）。
 - 团队/多 agent 协作模式。
 - 工具循环增强：无进展检测（连续相同工具+相同参数且结果无变化 → 主动提示停止）、Claude Code 式「暂停-继续」、并行工具执行（读类并行/写类串行）。
+- 工具结果块级渲染 / 交互式展开-收缩（M2/M3 连续延期的项，与 diff 块级渲染一起做）。
 - OS 级沙箱（macOS Seatbelt / Linux bubblewrap / 容器化），对标 Codex `--sandbox` 三档（readOnly/workspace-write/danger-full-access）与 Claude Code 的沙箱化 Bash。
 - /goal 类长任务：跨轮累计 token 预算做护栏（对标 Codex 0.128+ /goal）。
 
@@ -103,6 +104,16 @@
   - **`docs/resume.md`：面试用简历**（项目简介/亮点/技术栈/成果数据/与主流 Coding Agent 对比），每个里程碑完成后同步更新，保证面试时拿到的简历与项目现状一致，同时也归档到`docs/milestones/mN/`下。
   - 本文件第 5 节对比表。
 - **提交流程（重要）**：每个里程碑（或一次开发批）完成后，**先把结果交用户 review（对照 checklist/验收报告）**，用户明确确认后再执行 `git commit`；未经用户确认不提交。变更控制（spec 等已批准文档修改）仍需按前文流程重新审批。
+- **里程碑收尾检查清单（容易漏，逐个打勾）**：
+  1. 验收报告 `docs/验收报告-MN.md` 写了吗？
+  2. 四文档归档 `docs/milestones/mN/`（含 resume 快照）了吗？根目录四文档状态是否都 `approved`？
+  3. **README.md 更新了吗？**（状态行、当前功能、目录结构、测试数、相关文档链接——M2 时就漏过目录结构里的 `TurnRunner`，务必检查）
+  4. `docs/implementation.md` 的「实现了什么/怎么实现/对比/踩坑」追加了吗？
+  5. `CHANGELOG.md` 的 Added/Fixed/Changed 追加了吗？
+  6. `docs/roadmap.md` 的里程碑状态、特性对比表、顶部「最后更新」日期改了吗？
+  7. `docs/resume.md`（root 活文档）同步了吗？测试数/亮点/对比表是否与代码现状一致？
+  8. `docs/TODO.md` 勾掉已完成项、追加新技术债了吗？
+  9. 真机 Demo 文档（可选但推荐）写了吗？本地提交后 push 远程了吗？
 - 安全控制贯穿：危险操作确认、密钥脱敏（含不写入会话文件）、路径检查，并写入各里程碑 spec 的验收标准。
 
 ## 7. 参考资源

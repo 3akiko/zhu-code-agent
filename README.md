@@ -2,9 +2,9 @@
 
 用 Java 从零实现的一个命令行 Coding Agent（对标 Claude Code / Codex），用于学习 agent 核心机制与 agent 开发面试。
 
-> **状态：M2 已完成**（Agent 循环与 Tool Use：6 个内置工具 + 权限确认 + 安全边界，2026-08-08）。里程碑规划见 [docs/roadmap.md](docs/roadmap.md)。
+> **状态：M3 已完成**（文件编辑增强与 Plan Mode：diff 展示 / /plan 先计划后执行 / 快照回滚 undo-rewind / 权限模式三档，2026-08-09）。里程碑规划见 [docs/roadmap.md](docs/roadmap.md)。
 
-## 当前功能（M2）
+## 当前功能
 
 - 彩色终端 TUI（JLine3 + ANSI 256 色：用户青色 / 思考灰色 / 错误红色 / 状态绿色）
 - 启动流程：有历史会话先显示「新建对话 + 历史会话列表」，多 provider 显示选择列表，单 provider 直进聊天
@@ -12,13 +12,17 @@
 - 多轮对话记忆：历史随请求回传，模型可引用之前内容
 - 会话持久化与恢复：每轮回复完成后自动落盘到 `~/.zhu-code-agent/sessions/`，启动可选恢复（**不含 api_key**）
 - 双后端：Anthropic Claude（含 extended thinking，思考灰字实时展示、正文正常颜色、signature 多轮回传）/ OpenAI（**DeepSeek 等 OpenAI 兼容服务可直接用：`protocol: openai` + 自定义 `base_url`**）
-- 基础命令：`/help` `/clear` `/new`（保存当前并开新会话）`/exit`（退出前保存会话）
+- 基础命令：`/help` `/clear` `/new`（保存当前并开新会话）`/permissions`（查看/切换权限模式、查看/重置「总是允许」清单）`/exit`（退出前保存会话）
 - 统一 Provider 抽象：新增后端只需新增一个实现类 + 工厂分支，调用方不变
 - **Agent 循环（ReAct）**：模型输出工具调用 → 权限确认 → 执行 → 结果回填 → 循环直到 end_turn；同一消息多个工具调用串行执行、一次性回填
 - **内置 6 工具**：`read_file`（支持 offset/limit 行范围）/ `write_file` / `edit_file`（精确字符串替换，唯一匹配）/ `bash`（cwd、无 stdin、30s 超时、200KB 输出截断）/ `grep` / `glob`
 - **权限确认**：只读工具自动放行；写类/bash 行内确认（允许 a / 拒绝 d / 总是允许本次 s）；「总是允许」按工具+参数精确记忆、程序运行内有效、不落盘、退出重置；`/permissions` 查看与重置
 - **安全边界**：路径以工作区为根（realpath 含符号链接校验），越界/写 `.git/` 与 `~/.zhu-code-agent/` 拒绝；`rm -rf` 等危险命令即使曾「总是允许」也强制确认，且目标必须位于工作区内
 - **循环护栏**：单轮工具调用上限（`tool.max_calls_per_turn`，默认 60）+ 每步流空闲超时 120s + 结果预览行数可配（`ui.tool_preview_lines`，默认 5）
+- **diff 展示（M3）**：`edit_file` / `write_file`（覆写）结果内嵌变更 diff（`+` 绿 / `-` 红 / `@@` 亮青），TUI 完整展示、超长截断（`ui.diff_max_lines`，默认 200）、随会话落盘恢复可见
+- **`/plan` 先计划后执行（M3）**：计划阶段只读调研（write/edit/bash 被拦截、零副作用）→ 模型出计划 → `y` 批准执行（写仍按权限模式确认）/ `d` 拒绝 / **输入任意文本作为修改意见重新生成计划**；单轮闭环、无模式状态机
+- **快照回滚（M3）**：每次 write/edit 前把文件完整内容快照落盘（`~/.zhu-code-agent/snapshots/<会话ID>/`）；`/undo` 撤销最近一次写、`/rewind` 列表选择回退（统一机制、**跨会话有效**）；回滚记录写回会话；bash 副作用不追踪；>10MB 文件跳过快照
+- **权限模式三档（M3）**：`/permissions normal|acceptEdits|bypassPermissions`——acceptEdits 写文件自动批准（bash 仍确认）、bypass bash 非危险命令也自动批准；**危险命令强制确认、cwd 外破坏性命令拒绝等安全红线不削弱**；仅内存、退出重置
 
 ## 构建与运行
 
@@ -65,7 +69,7 @@ java -jar target/zhu-code-agent.jar                  # 直接进入聊天
 
 ```
 $ java -jar target/zhu-code-agent.jar
-zhuCodeAgent v0.1.0 —— 命令行 Coding Agent
+zhuCodeAgent v0.2.0 —— 命令行 Coding Agent
 Provider: claude · anthropic · claude-sonnet-4-5　输入 /help 查看帮助
 > 用一句话解释什么是 JVM
 [思考灰字…] [正文正常色流式输出…]
@@ -92,11 +96,16 @@ providers:
 ```
 src/main/java/com/zhubao/
 ├── Main.java              # 入口：--config 解析、退出码
-├── config/                # YAML 配置：六字段 + api_key 三级解析 + 校验
-├── conversation/          # 对话历史：Message(Role) / Conversation / Role 枚举
+├── config/                # YAML 配置：providers 六字段 + tool/ui 配置 + api_key 三级解析
+├── conversation/          # 对话历史：Message 内容块(text/tool_use/tool_result) / Conversation / Role
 ├── llm/                   # LlmClient 接口 + Anthropic/OpenAI 实现 + SseParser + StreamEvent
+├── agent/                 # AgentRunner 消息循环（普通 run / 计划 runPlan / 批准后执行 runExecution）
+├── tool/                  # 工具抽象 + 6 内置工具 + PathGuard/DangerGuard + SerialToolExecutor/PlanModeExecutor
+├── permission/            # 权限判定 + 三档模式（normal / acceptEdits / bypassPermissions）
+├── diff/                  # DiffGenerator（write/edit 结果内嵌轻量行 diff）
+├── history/               # FileHistory 检查点快照 + /undo /rewind 回滚
 ├── session/               # 会话落盘/恢复：Session / SessionStore（原子写，不含 api_key）
-└── tui/                   # JLine3 终端 + Ansi 颜色 + JLinePicker + ChatApp 状态机 + TurnRunner
+└── tui/                   # JLine3 终端 + Ansi 颜色 + JLinePicker + ChatApp 状态机 + SlashCommands
 ```
 
 ## 测试
@@ -105,11 +114,14 @@ src/main/java/com/zhubao/
 mvn test    # 单元测试 + mock HTTP 集成测试（不依赖真实密钥）
 ```
 
-覆盖：配置解析、SSE 解析、双协议流式客户端、thinking 多轮回传、会话存取、端到端流式链路。
+覆盖：配置解析、SSE 解析、双协议流式客户端、thinking 多轮回传、会话存取、端到端流式链路、6 工具与路径/危险命令守卫、权限判定与三档模式、diff 生成、快照回滚（undo/rewind 跨会话）、/plan 计划循环、mock LLM 端到端（M2 工具闭环 + M3 计划批准/拒绝/权限模式）。当前 **170 个测试全绿**；真机验证见 [docs/demo-M3文件编辑与PlanMode.md](docs/demo-M3文件编辑与PlanMode.md)。
 
 ## 相关文档
 
 - [Roadmap / 里程碑与对比表](docs/roadmap.md)
-- [M1 四文档归档](docs/milestones/m1/)
+- 里程碑归档：[M1](docs/milestones/m1/) · [M2](docs/milestones/m2/) · [M3](docs/milestones/m3/)
+- 验收报告：[M1](docs/验收报告-M1.md) · [M2](docs/验收报告-M2.md) · [M3](docs/验收报告-M3.md)
+- 真机 Demo：[M2 工具执行](docs/demo-M2工具执行.md) · [M3 文件编辑与 Plan Mode](docs/demo-M3文件编辑与PlanMode.md)
 - [实现记录与 Claude Code/Codex 对比](docs/implementation.md)
+- [待办与技术债](docs/TODO.md)
 - [变更日志](CHANGELOG.md)
