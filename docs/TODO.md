@@ -18,10 +18,16 @@
 ## 开发中发现的技术债务（2026-08-07 review 记录）
 
 - [ ] **客户端并发安全**（→ **M5 ① 前置**：Subagents/并行的硬前置，roadmap M5 已列入）：`AnthropicClient`/`OpenAiClient` 的流累积状态（inputTokens/outputTokens/stopReason/thinkingAccum 等）是实例字段，同一实例并发 `stream()` 有数据竞争。M1 因「每轮新建实例 + UI 串行」规避；M2 做 subagents 并发前需重构为 per-call 状态持有者。
-- [ ] **max_tokens 可配置化**（→ 建议随 **M4**：provider 配置扩展 + 上下文预算）：目前 AnthropicClient 写死 8192/64000；建议后续做成 provider 配置字段，并按模型区分上限（Claude Opus 32k vs Sonnet 64k），避免 opus + thinking 时 64000 报错。
-- [ ] **会话存储性能**（→ 建议随 **M4** 上下文压缩 或 **M7** 工程化一并做 JSONL）：当前每轮整文件原子写（O(n)/次），聊天规模够用；M2 上下文变大（工具输出/大段代码入历史）后评估 JSONL 追加写（无需文件锁，单进程单写者）。
+- [x] **max_tokens 可配置化**（M4 2026-08-12 完成：`LlmLimits` 模型表 + provider `context_window`/`max_tokens` 覆盖，F7）。
+- [x] **会话存储性能**（M4 2026-08-12 完成：JSONL 追加写 O(1)，F6）。
 - [ ] **多行输入**（→ 后置 **M8+**：UI 体验类）：M1 单行输入（Enter 即发送）；Shift+Enter 换行需绑定各终端的转义序列 + 多行渲染，属 M2 UI 增强。
-- [ ] **退出时优雅关闭流线程**（→ 随 **M4** 流式中断一起做：interrupt + join）：目前 daemon 线程在 JVM 退出时被直接掐断；可改为退出前 interrupt + join。
+- [x] **退出时优雅关闭流线程**（M4 2026-08-12 完成：`TurnInterruptController` cancel + join，F5）。
+
+## M4 开发中发现的技术债务（2026-08-12 记录）
+
+- [ ] **/rewind /undo 回滚记录连续 user**（→ **M8+**，roadmap 扩展清单已记录）：`ChatApp.renderRollback` 以 **user 角色**写入「[回滚] …」记录，紧接着提问出现**连续 user 消息**，违反 spec N3，Anthropic 严格端点/代理可能 `400 roles must alternate`（M4 demo 会话 `20260811-234252-a2dc.jsonl` [26][27] 实测）。修复：① [回滚] 记录合入下一条真实 user 消息（或按角色补位）；② `AnthropicClient.buildMessages` 连续同角色合并兜底。
+- [ ] **中断轮不计累计**（→ 设计内行为，如要精确统计可后续做）：被取消的流拿不到 usage（StreamEnd 未到达），中断轮实际消耗的 token 不进会话累计。
+- [ ] **prompt 缓存短前缀不命中**（→ 观察项）：DeepSeek 两种端点都需足够长公共前缀才命中缓存（Anthropic 端点还需显式 `cache_control`）；长会话首轮 cache 为 0 属预期。
 
 ## M3 开发中发现的技术债务（2026-08-09 review 记录）
 

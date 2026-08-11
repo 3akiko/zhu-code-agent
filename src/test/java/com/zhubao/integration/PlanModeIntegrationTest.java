@@ -6,6 +6,7 @@ import com.zhubao.conversation.Conversation;
 import com.zhubao.history.FileHistory;
 import com.zhubao.llm.ChatRequest;
 import com.zhubao.llm.LlmClient;
+import com.zhubao.llm.LlmStream;
 import com.zhubao.llm.StreamEvent;
 import com.zhubao.llm.ToolSpec;
 import com.zhubao.permission.PermissionChoice;
@@ -48,11 +49,11 @@ class PlanModeIntegrationTest {
         }
 
         @Override
-        public BlockingQueue<StreamEvent> stream(ChatRequest request) {
+        public LlmStream stream(ChatRequest request) {
             List<StreamEvent> script = scripts.isEmpty()
                     ? List.of(new StreamEvent.StreamEnd("end_turn", 0, 0))
                     : scripts.poll();
-            return new LinkedBlockingQueue<>(script);
+            return new LlmStream(new LinkedBlockingQueue<>(script), () -> { }, () -> { });
         }
     }
 

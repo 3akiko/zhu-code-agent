@@ -112,7 +112,14 @@ public class ConfigLoader {
         int toolMaxCalls = nestedInt(map, "tool", "max_calls_per_turn", AppConfig.DEFAULT_TOOL_MAX_CALLS_PER_TURN);
         int uiPreviewLines = nestedInt(map, "ui", "tool_preview_lines", AppConfig.DEFAULT_UI_TOOL_PREVIEW_LINES);
         int uiDiffMaxLines = nestedInt(map, "ui", "diff_max_lines", AppConfig.DEFAULT_UI_DIFF_MAX_LINES);
-        return new AppConfig(List.copyOf(providers), sessionsDir, toolMaxCalls, uiPreviewLines, uiDiffMaxLines);
+        // M4：上下文管理阈值（context.*）
+        double alertThreshold = nestedDouble(map, "context", "alert_threshold", AppConfig.DEFAULT_CONTEXT_ALERT_THRESHOLD);
+        double compactThreshold = nestedDouble(map, "context", "compact_threshold", AppConfig.DEFAULT_CONTEXT_COMPACT_THRESHOLD);
+        double compactTarget = nestedDouble(map, "context", "compact_target", AppConfig.DEFAULT_CONTEXT_COMPACT_TARGET);
+        boolean snipEnabled = nestedBool(map, "context", "snip_enabled", AppConfig.DEFAULT_CONTEXT_SNIP_ENABLED);
+        int keepRecentTurns = nestedInt(map, "context", "keep_recent_turns", AppConfig.DEFAULT_CONTEXT_KEEP_RECENT_TURNS);
+        return new AppConfig(List.copyOf(providers), sessionsDir, toolMaxCalls, uiPreviewLines, uiDiffMaxLines,
+                alertThreshold, compactThreshold, compactTarget, snipEnabled, keepRecentTurns);
     }
 
     /** 读取嵌套映射中的整数（如 tool.max_calls_per_turn）；缺失/非正整数 → 默认值 */
@@ -132,6 +139,39 @@ public class ConfigLoader {
         } catch (NumberFormatException e) {
             return def;
         }
+    }
+
+    /** 读取嵌套映射中的浮点数（如 context.alert_threshold）；缺失/非法 → 默认值 */
+    @SuppressWarnings("unchecked")
+    private static double nestedDouble(Map<?, ?> root, String section, String key, double def) {
+        Object node = root.get(section);
+        if (!(node instanceof Map<?, ?> sectionMap)) {
+            return def;
+        }
+        Object raw = sectionMap.get(key);
+        if (raw == null) {
+            return def;
+        }
+        try {
+            double v = Double.parseDouble(String.valueOf(raw));
+            return (v >= 0 && v <= 1) ? v : def;
+        } catch (NumberFormatException e) {
+            return def;
+        }
+    }
+
+    /** 读取嵌套映射中的布尔值（如 context.snip_enabled）；缺失 → 默认值 */
+    @SuppressWarnings("unchecked")
+    private static boolean nestedBool(Map<?, ?> root, String section, String key, boolean def) {
+        Object node = root.get(section);
+        if (!(node instanceof Map<?, ?> sectionMap)) {
+            return def;
+        }
+        Object raw = sectionMap.get(key);
+        if (raw == null) {
+            return def;
+        }
+        return Boolean.parseBoolean(String.valueOf(raw));
     }
 
     /** 单项 YAML → ProviderConfig（含 api_key 解析与字段校验） */
@@ -162,6 +202,9 @@ public class ConfigLoader {
         String apiKey = resolveApiKey(str(m, "api_key"), protocol, env, name);
 
         boolean thinking = Boolean.parseBoolean(str(m, "thinking"));
+        Integer contextWindow = intOrNull(m, "context_window");
+        Integer maxTokens = intOrNull(m, "max_tokens");
+        Boolean promptCache = m.containsKey("prompt_cache") ? Boolean.parseBoolean(str(m, "prompt_cache")) : null;
 
         ProviderConfig cfg = new ProviderConfig();
         cfg.setName(name);
@@ -170,6 +213,9 @@ public class ConfigLoader {
         cfg.setBaseUrl(baseUrl);
         cfg.setApiKey(apiKey);
         cfg.setThinking(thinking);
+        cfg.setContextWindow(contextWindow);
+        cfg.setMaxTokens(maxTokens);
+        cfg.setPromptCache(promptCache);
         return cfg;
     }
 
@@ -190,6 +236,20 @@ public class ConfigLoader {
         // 为空：回退到协议约定环境变量；仍为空则留空（API 调用时给出可读 401 错误）
         String convention = CONVENTION_ENV.get(protocol);
         return convention != null ? env.getOrDefault(convention, "") : "";
+    }
+
+    /** 取正整数（缺失/非法返回 null） */
+    private static Integer intOrNull(Map<String, Object> m, String key) {
+        Object v = m.get(key);
+        if (v == null) {
+            return null;
+        }
+        try {
+            int i = Integer.parseInt(String.valueOf(v));
+            return i > 0 ? i : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     /** 取字符串值（缺失返回 null） */

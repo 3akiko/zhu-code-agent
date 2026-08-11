@@ -111,6 +111,7 @@ public class TerminalUi implements AutoCloseable {
         return jlineTerminal;
     }
 
+
     @Override
     public void close() {
         try {

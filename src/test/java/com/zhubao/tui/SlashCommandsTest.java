@@ -19,6 +19,7 @@ class SlashCommandsTest {
         assertEquals(SlashCommands.Action.PLAN, SlashCommands.parse("/plan 重构 xxx"));
         assertEquals(SlashCommands.Action.UNDO, SlashCommands.parse("/undo"));
         assertEquals(SlashCommands.Action.REWIND, SlashCommands.parse("/rewind"));
+        assertEquals(SlashCommands.Action.COMPACT, SlashCommands.parse("/compact"));
         assertEquals(SlashCommands.Action.HELP, SlashCommands.parse("  /HELP  "));
     }
 

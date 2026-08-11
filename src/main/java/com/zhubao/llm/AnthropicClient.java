@@ -26,13 +26,12 @@ public class AnthropicClient extends AbstractStreamingClient {
 
     private static final String API_VERSION = "2023-06-01";
     private static final int THINKING_BUDGET_TOKENS = 32000;
-    /** 非思考模式默认最大输出；思考模式下需大于 budget_tokens（Anthropic 协议要求） */
-    private static final int MAX_OUTPUT_TOKENS_PLAIN = 8192;
-    private static final int MAX_OUTPUT_TOKENS_THINKING = 64000;
 
     // 每个流的状态（M1 单线程对话，一次只有一个流，字段级状态足够）
     private int inputTokens;
     private int outputTokens;
+    private int cacheReadTokens;
+    private int cacheCreationTokens;
     private String stopReason;
     private boolean inThinking;
     private final StringBuilder thinkingAccum = new StringBuilder();
@@ -51,6 +50,8 @@ public class AnthropicClient extends AbstractStreamingClient {
     protected void onStreamStart() {
         inputTokens = 0;
         outputTokens = 0;
+        cacheReadTokens = 0;
+        cacheCreationTokens = 0;
         stopReason = "end_turn";
         inThinking = false;
         thinkingAccum.setLength(0);
@@ -65,9 +66,17 @@ public class AnthropicClient extends AbstractStreamingClient {
     protected HttpRequest buildRequest(ChatRequest request) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", config.getModel());
-        body.put("system", request.systemPrompt());
+        // M4（spec F4）：prompt 缓存断点。开启时 system 用块数组 + cache_control；
+        // 关闭时（prompt_cache: false，兼容不识别 cache_control 的端点）回退 M1 字符串 system
+        if (config.effectivePromptCache()) {
+            body.put("system", List.of(ordered("type", "text", "text", request.systemPrompt(),
+                    "cache_control", Map.of("type", "ephemeral"))));
+        } else {
+            body.put("system", request.systemPrompt());
+        }
         body.put("messages", buildMessages(request.messages()));
-        body.put("max_tokens", config.isThinking() ? MAX_OUTPUT_TOKENS_THINKING : MAX_OUTPUT_TOKENS_PLAIN);
+        // M4（spec F7）：max_tokens 由 provider 配置 / 模型表解析，不再写死
+        body.put("max_tokens", config.effectiveMaxTokens(config.isThinking()));
         body.put("stream", true);
         if (config.isThinking()) {
             // LinkedHashMap 保证字段顺序，便于请求体断言与调试
@@ -79,7 +88,13 @@ public class AnthropicClient extends AbstractStreamingClient {
         if (request.tools() != null && !request.tools().isEmpty()) {
             List<Map<String, Object>> tools = new ArrayList<>();
             for (ToolSpec t : request.tools()) {
-                tools.add(ordered("name", t.name(), "description", t.description(), "input_schema", t.inputSchema()));
+                // M4（spec F4）：每个工具定义打 cache_control 断点（prompt 缓存）；关闭时不带
+                if (config.effectivePromptCache()) {
+                    tools.add(ordered("name", t.name(), "description", t.description(), "input_schema", t.inputSchema(),
+                            "cache_control", Map.of("type", "ephemeral")));
+                } else {
+                    tools.add(ordered("name", t.name(), "description", t.description(), "input_schema", t.inputSchema()));
+                }
             }
             body.put("tools", tools);
         }
@@ -203,8 +218,12 @@ public class AnthropicClient extends AbstractStreamingClient {
                         stopReason = reason;
                     }
                     outputTokens = data.path("usage").path("output_tokens").asInt(0);
+                    // M4（spec F4）：prompt 缓存命中/创建统计
+                    cacheReadTokens = data.path("usage").path("cache_read_input_tokens").asInt(0);
+                    cacheCreationTokens = data.path("usage").path("cache_creation_input_tokens").asInt(0);
                 }
-                case "message_stop" -> put(queue, new StreamEvent.StreamEnd(stopReason, inputTokens, outputTokens));
+                case "message_stop" -> put(queue, new StreamEvent.StreamEnd(
+                        stopReason, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens));
                 default -> { /* ping 等忽略 */ }
             }
         } catch (Exception e) {

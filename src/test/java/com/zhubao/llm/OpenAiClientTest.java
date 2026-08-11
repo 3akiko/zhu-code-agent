@@ -141,4 +141,63 @@ class OpenAiClientTest {
             assertTrue(body.contains("\"role\":\"tool\",\"tool_call_id\":\"call_1\""));
         }
     }
+
+    private static final String SSE_CACHED_OPENAI = """
+            data: {"id":"1","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":"stop"}]}
+
+            data: {"id":"1","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":80}}}
+
+            data: [DONE]
+
+            """;
+
+    private static final String SSE_CACHED_DEEPSEEK = """
+            data: {"id":"1","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":"stop"}]}
+
+            data: {"id":"1","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"prompt_cache_hit_tokens":70}}
+
+            data: [DONE]
+
+            """;
+
+    @Test
+    void openAiCachedTokensParsedToStreamEnd() throws Exception {
+        try (MockHttpServer server = new MockHttpServer((ex, body) -> MockHttpServer.writeSse(ex, SSE_CACHED_OPENAI))) {
+            OpenAiClient client = new OpenAiClient(provider(server.baseUrl()));
+            List<StreamEvent> events = StreamTestSupport.drain(
+                    client.stream(new ChatRequest("sys", List.of(new Message(Role.USER, "hi")))), TIMEOUT);
+            assertEquals(2, events.size());
+            StreamEvent.StreamEnd end = (StreamEvent.StreamEnd) events.get(1);
+            assertEquals(100, end.inputTokens());
+            assertEquals(5, end.outputTokens());
+            assertEquals(80, end.cacheReadTokens());
+            assertEquals(0, end.cacheCreationTokens());
+        }
+    }
+
+    @Test
+    void deepSeekPromptCacheHitParsedToStreamEnd() throws Exception {
+        try (MockHttpServer server = new MockHttpServer((ex, body) -> MockHttpServer.writeSse(ex, SSE_CACHED_DEEPSEEK))) {
+            OpenAiClient client = new OpenAiClient(provider(server.baseUrl()));
+            List<StreamEvent> events = StreamTestSupport.drain(
+                    client.stream(new ChatRequest("sys", List.of(new Message(Role.USER, "hi")))), TIMEOUT);
+            StreamEvent.StreamEnd end = (StreamEvent.StreamEnd) events.get(1);
+            assertEquals(70, end.cacheReadTokens());
+        }
+    }
+
+    @Test
+    void maxTokensOnlySentWhenConfigured() throws Exception {
+        try (MockHttpServer server = new MockHttpServer((ex, body) -> MockHttpServer.writeSse(ex, SSE_FULL))) {
+            OpenAiClient client = new OpenAiClient(provider(server.baseUrl()));
+            StreamTestSupport.drain(client.stream(new ChatRequest("sys", List.of(new Message(Role.USER, "hi")))), TIMEOUT);
+            assertFalse(server.lastRequestBody().contains("\"max_tokens\""));
+
+            ProviderConfig cfg = provider(server.baseUrl());
+            cfg.setMaxTokens(4096);
+            OpenAiClient configured = new OpenAiClient(cfg);
+            StreamTestSupport.drain(configured.stream(new ChatRequest("sys", List.of(new Message(Role.USER, "hi")))), TIMEOUT);
+            assertTrue(server.lastRequestBody().contains("\"max_tokens\":4096"));
+        }
+    }
 }

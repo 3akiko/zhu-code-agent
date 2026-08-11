@@ -3,6 +3,7 @@ package com.zhubao.agent;
 import com.zhubao.conversation.Conversation;
 import com.zhubao.llm.ChatRequest;
 import com.zhubao.llm.LlmClient;
+import com.zhubao.llm.LlmStream;
 import com.zhubao.llm.StreamEvent;
 import com.zhubao.llm.ToolSpec;
 import com.zhubao.tool.PlanModeExecutor;
@@ -13,6 +14,7 @@ import com.zhubao.tool.ToolResult;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 
@@ -61,7 +63,13 @@ public final class AgentRunner {
     private AgentRunner() {
     }
 
-    /** 一轮 agent 循环的结果 */
+    /**
+     * 一轮 agent 循环的结果。
+     *
+     * <p>M4（spec F1/F5）：totalInputTokens/totalOutputTokens 为本轮全部步骤求和；
+     * cacheReadTokens/cacheCreationTokens 为最后一步的 prompt 缓存命中（spec F4）；
+     * interrupted 表示被 Ctrl+C 中断（半成品不写入会话、不追加进行中那轮 tool_use/tool_result）。
+     */
     public record Result(
             String text,
             String thinking,
@@ -71,7 +79,19 @@ public final class AgentRunner {
             String stopReason,
             int inputTokens,
             int outputTokens,
-            boolean limitReached) {
+            boolean limitReached,
+            int totalInputTokens,
+            int totalOutputTokens,
+            int cacheReadTokens,
+            int cacheCreationTokens,
+            boolean interrupted) {
+
+        /** 兼容旧调用（M1–M3）：累计/cache=0、interrupted=false */
+        public Result(String text, String thinking, String signature, boolean error, String errorMessage,
+                      String stopReason, int inputTokens, int outputTokens, boolean limitReached) {
+            this(text, thinking, signature, error, errorMessage, stopReason, inputTokens, outputTokens,
+                    limitReached, inputTokens, outputTokens, 0, 0, false);
+        }
     }
 
     /** 普通一轮（addUser + NORMAL 提示词） */
@@ -85,32 +105,64 @@ public final class AgentRunner {
     public static Result run(LlmClient client, Conversation conversation, String userText,
                              List<ToolSpec> tools, SerialToolExecutor executor,
                              AgentUi ui, int maxCallsPerTurn, long stepIdleTimeoutMs) {
+        return run(client, conversation, userText, tools, executor, ui, maxCallsPerTurn,
+                stepIdleTimeoutMs, null);
+    }
+
+    /** M4（spec F5）：普通一轮 + 流句柄回调（ChatApp 用于 Ctrl+C 取消与退出 join） */
+    public static Result run(LlmClient client, Conversation conversation, String userText,
+                             List<ToolSpec> tools, SerialToolExecutor executor, AgentUi ui,
+                             int maxCallsPerTurn, long stepIdleTimeoutMs, Consumer<LlmStream> onStream) {
         return runLoop(client, conversation, userText, tools, executor, ui,
-                maxCallsPerTurn, stepIdleTimeoutMs, SYSTEM_PROMPT, true);
+                maxCallsPerTurn, stepIdleTimeoutMs, SYSTEM_PROMPT, true, onStream);
     }
 
     /** /plan 计划阶段：addUser + PLAN 提示词 + 只读受限执行器（spec F2） */
     public static Result runPlan(LlmClient client, Conversation conversation, String userText,
                                  List<ToolSpec> tools, PlanModeExecutor executor, AgentUi ui,
                                  int maxCallsPerTurn, long stepIdleTimeoutMs) {
+        return runPlan(client, conversation, userText, tools, executor, ui,
+                maxCallsPerTurn, stepIdleTimeoutMs, null);
+    }
+
+    /** M4（spec F5）：计划阶段 + 流句柄回调 */
+    public static Result runPlan(LlmClient client, Conversation conversation, String userText,
+                                 List<ToolSpec> tools, PlanModeExecutor executor, AgentUi ui,
+                                 int maxCallsPerTurn, long stepIdleTimeoutMs, Consumer<LlmStream> onStream) {
         return runLoop(client, conversation, userText, tools, executor, ui,
-                maxCallsPerTurn, stepIdleTimeoutMs, PLAN_SYSTEM_PROMPT, true);
+                maxCallsPerTurn, stepIdleTimeoutMs, PLAN_SYSTEM_PROMPT, true, onStream);
     }
 
     /** 修改意见后重新生成计划：不再 addUser（会话已含任务+调研+旧计划+意见） */
     public static Result runPlanContinue(LlmClient client, Conversation conversation,
                                          List<ToolSpec> tools, PlanModeExecutor executor, AgentUi ui,
                                          int maxCallsPerTurn, long stepIdleTimeoutMs) {
+        return runPlanContinue(client, conversation, tools, executor, ui,
+                maxCallsPerTurn, stepIdleTimeoutMs, null);
+    }
+
+    /** M4（spec F5）：重新生成计划 + 流句柄回调 */
+    public static Result runPlanContinue(LlmClient client, Conversation conversation,
+                                         List<ToolSpec> tools, PlanModeExecutor executor, AgentUi ui,
+                                         int maxCallsPerTurn, long stepIdleTimeoutMs, Consumer<LlmStream> onStream) {
         return runLoop(client, conversation, null, tools, executor, ui,
-                maxCallsPerTurn, stepIdleTimeoutMs, PLAN_SYSTEM_PROMPT, false);
+                maxCallsPerTurn, stepIdleTimeoutMs, PLAN_SYSTEM_PROMPT, false, onStream);
     }
 
     /** 批准后执行阶段：不再 addUser（会话已含 user+计划+调研结果），正常循环 */
     public static Result runExecution(LlmClient client, Conversation conversation,
                                       List<ToolSpec> tools, SerialToolExecutor executor, AgentUi ui,
                                       int maxCallsPerTurn, long stepIdleTimeoutMs) {
+        return runExecution(client, conversation, tools, executor, ui,
+                maxCallsPerTurn, stepIdleTimeoutMs, null);
+    }
+
+    /** M4（spec F5）：执行阶段 + 流句柄回调 */
+    public static Result runExecution(LlmClient client, Conversation conversation,
+                                      List<ToolSpec> tools, SerialToolExecutor executor, AgentUi ui,
+                                      int maxCallsPerTurn, long stepIdleTimeoutMs, Consumer<LlmStream> onStream) {
         return runLoop(client, conversation, null, tools, executor, ui,
-                maxCallsPerTurn, stepIdleTimeoutMs, SYSTEM_PROMPT, false);
+                maxCallsPerTurn, stepIdleTimeoutMs, SYSTEM_PROMPT, false, onStream);
     }
 
     /**
@@ -122,7 +174,7 @@ public final class AgentRunner {
     private static Result runLoop(LlmClient client, Conversation conversation, String userText,
                                   List<ToolSpec> tools, ToolExecutor executor, AgentUi ui,
                                   int maxCallsPerTurn, long stepIdleTimeoutMs,
-                                  String systemPrompt, boolean addUser) {
+                                  String systemPrompt, boolean addUser, Consumer<LlmStream> onStream) {
         if (addUser) {
             conversation.addUser(userText);
         }
@@ -130,18 +182,35 @@ public final class AgentRunner {
         String stopReason = "";
         int inputTokens = 0;
         int outputTokens = 0;
+        // M4（spec F1/F4/F5）：本轮累计与最后一步缓存命中
+        int totalInputTokens = 0;
+        int totalOutputTokens = 0;
+        int cacheReadTokens = 0;
+        int cacheCreationTokens = 0;
 
         while (true) {
             if (steps >= maxCallsPerTurn) {
-                return new Result("", "", null, false, null, stopReason, inputTokens, outputTokens, true);
+                return new Result("", "", null, false, null, stopReason, inputTokens, outputTokens, true,
+                        totalInputTokens, totalOutputTokens, cacheReadTokens, cacheCreationTokens, false);
             }
             if (ui != null) {
                 ui.onStep("⏳ 正在思考…");
             }
-            StepOutcome outcome = consumeStep(client, conversation, tools, systemPrompt, ui, stepIdleTimeoutMs);
+            StepOutcome outcome = consumeStep(client, conversation, tools, systemPrompt, ui, stepIdleTimeoutMs, onStream);
+            totalInputTokens += outcome.inputTokens;
+            totalOutputTokens += outcome.outputTokens;
+            cacheReadTokens = outcome.cacheReadTokens;
+            cacheCreationTokens = outcome.cacheCreationTokens;
+            if (outcome.interrupted) {
+                // 生成被 Ctrl+C 中断：半成品不写回会话、不执行未决工具调用
+                return new Result(outcome.text, outcome.thinking, outcome.signature, true,
+                        outcome.errorMessage, outcome.stopReason, outcome.inputTokens, outcome.outputTokens, false,
+                        totalInputTokens, totalOutputTokens, cacheReadTokens, cacheCreationTokens, true);
+            }
             if (outcome.errorMessage != null) {
                 return new Result(outcome.text, outcome.thinking, outcome.signature, true,
-                        outcome.errorMessage, outcome.stopReason, outcome.inputTokens, outcome.outputTokens, false);
+                        outcome.errorMessage, outcome.stopReason, outcome.inputTokens, outcome.outputTokens, false,
+                        totalInputTokens, totalOutputTokens, cacheReadTokens, cacheCreationTokens, false);
             }
             stopReason = outcome.stopReason;
             inputTokens = outcome.inputTokens;
@@ -150,10 +219,16 @@ public final class AgentRunner {
                 // 无工具调用 → 本轮完成：最终 assistant 消息写回会话，输出最终文本
                 conversation.addAssistant(outcome.text, outcome.thinking, outcome.signature);
                 return new Result(outcome.text, outcome.thinking, outcome.signature, false,
-                        null, stopReason, inputTokens, outputTokens, false);
+                        null, stopReason, inputTokens, outputTokens, false,
+                        totalInputTokens, totalOutputTokens, cacheReadTokens, cacheCreationTokens, false);
             }
             // 有工具调用：串行执行（权限在 executor 内）→ 一次性回填
             List<ToolResult> results = executor.execute(outcome.toolCalls);
+            if (Thread.currentThread().isInterrupted()) {
+                // 工具执行中被 Ctrl+C 中断：不追加进行中那轮的 tool_use/tool_result（避免悬空 tool_use，M4 变更控制）
+                return new Result("", "", null, true, "已中断", stopReason, inputTokens, outputTokens, false,
+                        totalInputTokens, totalOutputTokens, cacheReadTokens, cacheCreationTokens, true);
+            }
             conversation.addAssistantWithTools(outcome.text, outcome.thinking, outcome.signature, outcome.toolCalls);
             conversation.addToolResultBlocks(results);
             steps++;
@@ -163,9 +238,12 @@ public final class AgentRunner {
     /** 一步：调 LLM、消费事件，返回该步文本/思考/工具调用与结束信息 */
     private static StepOutcome consumeStep(LlmClient client, Conversation conversation,
                                            List<ToolSpec> tools, String systemPrompt,
-                                           AgentUi ui, long stepIdleTimeoutMs) {
-        BlockingQueue<StreamEvent> queue =
-                client.stream(conversation.buildRequest(systemPrompt, tools));
+                                           AgentUi ui, long stepIdleTimeoutMs, Consumer<LlmStream> onStream) {
+        LlmStream stream = client.stream(conversation.buildRequest(systemPrompt, tools));
+        if (onStream != null) {
+            onStream.accept(stream);
+        }
+        BlockingQueue<StreamEvent> queue = stream.events();
         StringBuilder text = new StringBuilder();
         StringBuilder thinking = new StringBuilder();
         String signature = null;
@@ -187,7 +265,7 @@ public final class AgentRunner {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return new StepOutcome(text.toString(), thinking.toString(), signature, toolCalls,
-                        stopReason, inputTokens, outputTokens, "生成被中断");
+                        stopReason, inputTokens, outputTokens, 0, 0, true, "生成被中断");
             }
             if (event == null) {
                 continue;
@@ -204,16 +282,18 @@ public final class AgentRunner {
             } else if (event instanceof StreamEvent.ToolCall tc) {
                 toolCalls.add(new ToolCall(tc.id(), tc.name(), tc.argumentsJson()));
             } else if (event instanceof StreamEvent.Error err) {
+                boolean interrupted = "已中断".equals(err.message());
                 return new StepOutcome(text.toString(), thinking.toString(), signature, toolCalls,
-                        stopReason, inputTokens, outputTokens, err.message());
+                        stopReason, inputTokens, outputTokens, 0, 0, interrupted, err.message());
             } else if (event instanceof StreamEvent.StreamEnd end) {
                 return new StepOutcome(text.toString(), thinking.toString(), signature, toolCalls,
-                        end.stopReason(), end.inputTokens(), end.outputTokens(), null);
+                        end.stopReason(), end.inputTokens(), end.outputTokens(),
+                        end.cacheReadTokens(), end.cacheCreationTokens(), false, null);
             }
         }
     }
 
-    /** 一步的累积结果 */
+    /** 一步的累积结果（M4：含缓存命中与中断标志） */
     private record StepOutcome(
             String text,
             String thinking,
@@ -222,6 +302,16 @@ public final class AgentRunner {
             String stopReason,
             int inputTokens,
             int outputTokens,
+            int cacheReadTokens,
+            int cacheCreationTokens,
+            boolean interrupted,
             String errorMessage) {
+
+        /** 兼容旧 8 参构造（cache=0、interrupted=false） */
+        StepOutcome(String text, String thinking, String signature, List<ToolCall> toolCalls,
+                    String stopReason, int inputTokens, int outputTokens, String errorMessage) {
+            this(text, thinking, signature, toolCalls, stopReason, inputTokens, outputTokens,
+                    0, 0, false, errorMessage);
+        }
     }
 }

@@ -111,7 +111,7 @@ class SessionStoreTest {
         SessionStore store = new SessionStore(tmp);
         store.save(newSession("sec", Instant.parse("2026-08-07T10:00:00Z")));
 
-        String json = Files.readString(tmp.resolve("sec.json"));
+        String json = Files.readString(tmp.resolve("sec.jsonl"));
         assertFalse(json.contains("apiKey"));
         assertFalse(json.contains("api_key"));
         // provider 快照只含 name/protocol/model/baseUrl
@@ -123,7 +123,7 @@ class SessionStoreTest {
         Path dir = tmp.resolve("nested/sessions");
         SessionStore store = new SessionStore(dir);
         store.save(newSession("x", Instant.parse("2026-08-07T10:00:00Z")));
-        assertTrue(Files.exists(dir.resolve("x.json")));
+        assertTrue(Files.exists(dir.resolve("x.jsonl")));
     }
 
     @Test

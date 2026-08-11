@@ -19,6 +19,7 @@ providers:
     base_url: https://api.deepseek.com/anthropic
     api_key: ${DEEPSEEK_API_KEY}
     thinking: true                    # 思考灰字实时展示（budget_tokens 被 DeepSeek 忽略）
+    # prompt_cache: false             # M4：默认发送 Anthropic cache_control 断点；若端点不识别可设 false
 
   # Anthropic Claude（需要 ANTHROPIC_API_KEY；暂无密钥时可先不配置这一项）
   - name: claude
@@ -27,6 +28,8 @@ providers:
     base_url: https://api.anthropic.com
     api_key: ${ANTHROPIC_API_KEY}
     thinking: true                    # 启用 extended thinking（思考灰字展示）
+    # context_window: 200000          # M4：可选，覆盖内置模型表（如模型上下文窗口）
+    # max_tokens: 64000               # M4：可选，覆盖内置输出上限（未配置按模型表：thinking 64000 / plain 8192）
 
 # ── M2：Agent 循环与 Tool Use ─────────────────────────────
 tool:
@@ -34,3 +37,11 @@ tool:
 ui:
   tool_preview_lines: 5      # 工具结果在终端的预览行数（超出显示「…已截断，共 N 行」）
   diff_max_lines: 200        # M3：write/edit 结果内嵌 diff 的最大展示行数（超出截断并标注）
+
+# ── M4：上下文管理与稳定性 ───────────────────────────────
+context:
+  alert_threshold: 0.8       # 上下文占用告警阈值（达此比例显示告警）
+  compact_threshold: 0.9     # 自动压缩触发阈值（生成前占用达此比例自动压缩）
+  compact_target: 0.6        # 压缩目标水位（压缩后占用应回落到该比例以下）
+  snip_enabled: true         # 压缩时是否先做本地瘦身（丢弃空/被拒低价值轮次）
+  keep_recent_turns: 8       # 压缩折叠后保留的最近轮数

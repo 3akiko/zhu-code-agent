@@ -72,6 +72,14 @@ public class Conversation {
         return List.copyOf(history);
     }
 
+    /** 整体替换历史（M4 压缩用：snip/截断/摘要折叠后回写；外部负责构造合法消息序） */
+    public void replaceMessages(List<Message> messages) {
+        history.clear();
+        if (messages != null) {
+            history.addAll(messages);
+        }
+    }
+
     /** 构造统一请求（M1 兼容：不带 tools） */
     public ChatRequest buildRequest(String systemPrompt) {
         return new ChatRequest(systemPrompt, getMessages());

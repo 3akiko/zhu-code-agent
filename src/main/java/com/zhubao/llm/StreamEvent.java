@@ -29,8 +29,20 @@ public sealed interface StreamEvent {
      */
     record ToolCall(String id, String name, String argumentsJson) implements StreamEvent {}
 
-    /** 流式结束：stop_reason + token 用量 */
-    record StreamEnd(String stopReason, int inputTokens, int outputTokens) implements StreamEvent {}
+    /**
+     * 流式结束：stop_reason + token 用量 + prompt 缓存命中指标（M4，spec F4）。
+     *
+     * <p>cacheReadTokens：Anthropic cache_read_input_tokens / OpenAI prompt_tokens_details.cached_tokens
+     * / DeepSeek prompt_cache_hit_tokens；cacheCreationTokens：Anthropic cache_creation_input_tokens（其余 0）。
+     */
+    record StreamEnd(String stopReason, int inputTokens, int outputTokens,
+                     int cacheReadTokens, int cacheCreationTokens) implements StreamEvent {
+
+        /** 兼容旧调用（M1–M3）：缓存指标默认 0 */
+        public StreamEnd(String stopReason, int inputTokens, int outputTokens) {
+            this(stopReason, inputTokens, outputTokens, 0, 0);
+        }
+    }
 
     /** 错误（消息已脱敏，不含 api_key） */
     record Error(String message) implements StreamEvent {}

@@ -6,6 +6,7 @@ import com.zhubao.conversation.Message;
 import com.zhubao.conversation.Role;
 import com.zhubao.llm.ChatRequest;
 import com.zhubao.llm.LlmClient;
+import com.zhubao.llm.LlmStream;
 import com.zhubao.llm.StreamEvent;
 import com.zhubao.llm.ToolSpec;
 import com.zhubao.permission.PermissionChoice;
@@ -43,11 +44,11 @@ class AgentRunnerTest {
         }
 
         @Override
-        public BlockingQueue<StreamEvent> stream(ChatRequest request) {
+        public LlmStream stream(ChatRequest request) {
             List<StreamEvent> script = scripts.isEmpty()
                     ? List.of(new StreamEvent.StreamEnd("end_turn", 0, 0))
                     : scripts.poll();
-            return new LinkedBlockingQueue<>(script);
+            return new LlmStream(new LinkedBlockingQueue<>(script), () -> { }, () -> { });
         }
     }
 
@@ -213,5 +214,36 @@ class AgentRunnerTest {
         assertEquals(4, h.conversation.messageCount());
         // 文件未被修改（只读调研）
         assertEquals("hello", Files.readString(ws.resolve("a.txt")));
+    }
+
+    // ── M4（spec F1/F4）：本轮累计与最后一步缓存命中 ─────────────────
+    @Test
+    void totalsAndCacheAccumulatedAcrossSteps() throws Exception {
+        Harness h = harness();
+        StubClient client = new StubClient(List.of(
+                List.of(new StreamEvent.ToolCall("tu1", "read_file", "{\"path\":\"a.txt\"}"),
+                        new StreamEvent.StreamEnd("tool_use", 5, 6, 10, 2)),
+                List.of(new StreamEvent.TextDelta("完成"), new StreamEvent.StreamEnd("end_turn", 7, 8, 30, 4))));
+        AgentRunner.Result r = AgentRunner.run(client, h.conversation, "跑", h.specs, h.executor, h.ui, 60);
+        assertFalse(r.error(), r.errorMessage());
+        assertEquals("完成", r.text());
+        assertEquals(12, r.totalInputTokens(), "本轮 input 求和");
+        assertEquals(14, r.totalOutputTokens(), "本轮 output 求和");
+        assertEquals(30, r.cacheReadTokens(), "最后一步缓存命中");
+        assertEquals(4, r.cacheCreationTokens());
+        assertFalse(r.interrupted());
+    }
+
+    // ── M4（spec F5）：生成被中断 → 半成品回滚、不写会话 ─────────────
+    @Test
+    void interruptedGenerationRollsBackPartialAndFlags() {
+        Harness h = harness();
+        StubClient client = new StubClient(List.of(
+                List.of(new StreamEvent.TextDelta("半成品"), new StreamEvent.Error("已中断"))));
+        AgentRunner.Result r = AgentRunner.run(client, h.conversation, "问", h.specs, h.executor, h.ui, 60);
+        assertTrue(r.interrupted());
+        assertTrue(r.error());
+        assertEquals("已中断", r.errorMessage());
+        assertEquals(1, h.conversation.messageCount(), "半成品不写入会话，仅保留用户消息");
     }
 }

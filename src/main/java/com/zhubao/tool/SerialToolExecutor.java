@@ -47,6 +47,10 @@ public final class SerialToolExecutor implements ToolExecutor {
     public List<ToolResult> execute(List<ToolCall> calls) {
         List<ToolResult> results = new ArrayList<>(calls.size());
         for (ToolCall call : calls) {
+            // M4（spec F5）：Ctrl+C 中断后停止后续工具调用（当前正在执行的由 BashTool.cancel 处理）
+            if (Thread.currentThread().isInterrupted()) {
+                break;
+            }
             if (ui != null) {
                 ui.onToolCall(call);
             }
