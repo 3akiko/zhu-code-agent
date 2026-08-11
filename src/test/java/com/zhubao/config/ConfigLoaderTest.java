@@ -252,4 +252,95 @@ class ConfigLoaderTest {
         AppConfig cfg = ConfigLoader.load(p.toString(), Map.of());
         assertEquals(AppConfig.DEFAULT_TOOL_MAX_CALLS_PER_TURN, cfg.toolMaxCallsPerTurn());
     }
+
+    // ── M4：context.* 与 provider context_window / max_tokens ──────────
+    @Test
+    void contextSectionParsedWithDefaultsWhenAbsent() throws Exception {
+        Path p = writeConfig("""
+                providers:
+                  - name: deepseek
+                    protocol: openai
+                    model: deepseek-chat
+                """);
+        AppConfig cfg = ConfigLoader.load(p.toString(), Map.of());
+        assertEquals(0.8, cfg.contextAlertThreshold());
+        assertEquals(0.9, cfg.contextCompactThreshold());
+        assertEquals(0.6, cfg.contextCompactTarget());
+        assertTrue(cfg.contextSnipEnabled());
+        assertEquals(8, cfg.contextKeepRecentTurns());
+    }
+
+    @Test
+    void contextSectionOverridden() throws Exception {
+        Path p = writeConfig("""
+                providers:
+                  - name: deepseek
+                    protocol: openai
+                    model: deepseek-chat
+                context:
+                  alert_threshold: 0.75
+                  compact_threshold: 0.88
+                  compact_target: 0.5
+                  snip_enabled: false
+                  keep_recent_turns: 4
+                """);
+        AppConfig cfg = ConfigLoader.load(p.toString(), Map.of());
+        assertEquals(0.75, cfg.contextAlertThreshold());
+        assertEquals(0.88, cfg.contextCompactThreshold());
+        assertEquals(0.5, cfg.contextCompactTarget());
+        assertFalse(cfg.contextSnipEnabled());
+        assertEquals(4, cfg.contextKeepRecentTurns());
+    }
+
+    @Test
+    void invalidContextThresholdFallsBackToDefault() throws Exception {
+        Path p = writeConfig("""
+                providers:
+                  - name: deepseek
+                    protocol: openai
+                    model: deepseek-chat
+                context:
+                  alert_threshold: 5.0
+                """);
+        AppConfig cfg = ConfigLoader.load(p.toString(), Map.of());
+        assertEquals(0.8, cfg.contextAlertThreshold());
+    }
+
+    @Test
+    void providerPromptCacheParsedWithDefaultTrue() throws Exception {
+        Path p1 = writeConfig("""
+                providers:
+                  - name: deepseek
+                    protocol: openai
+                    model: deepseek-v4-flash
+                """);
+        assertTrue(ConfigLoader.load(p1.toString(), Map.of()).providers().get(0).effectivePromptCache());
+
+        Path p2 = writeConfig("""
+                providers:
+                  - name: deepseek
+                    protocol: openai
+                    model: deepseek-v4-flash
+                    prompt_cache: false
+                """);
+        assertFalse(ConfigLoader.load(p2.toString(), Map.of()).providers().get(0).effectivePromptCache());
+    }
+
+    @Test
+    void providerContextWindowAndMaxTokensParsed() throws Exception {
+        Path p = writeConfig("""
+                providers:
+                  - name: deepseek
+                    protocol: openai
+                    model: deepseek-v4-flash
+                    context_window: 2000
+                    max_tokens: 4096
+                """);
+        AppConfig cfg = ConfigLoader.load(p.toString(), Map.of());
+        ProviderConfig provider = cfg.providers().get(0);
+        assertEquals(2000, provider.effectiveContextWindow());
+        assertEquals(4096, provider.effectiveMaxTokens(true));
+        assertEquals(4096, provider.effectiveMaxTokens(false));
+    }
+
 }

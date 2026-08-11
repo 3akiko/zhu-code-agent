@@ -3,6 +3,9 @@ package com.zhubao.tui;
 import com.zhubao.agent.AgentRunner;
 import com.zhubao.agent.AgentUi;
 import com.zhubao.config.AppConfig;
+import com.zhubao.context.CompactionOptions;
+import com.zhubao.context.CompactionResult;
+import com.zhubao.context.ContextCompactor;
 import com.zhubao.config.ProviderConfig;
 import com.zhubao.history.FileCheckpoint;
 import com.zhubao.history.FileHistory;
@@ -26,8 +29,10 @@ import com.zhubao.tool.SerialToolExecutor;
 import com.zhubao.tool.ToolCall;
 import com.zhubao.tool.ToolRegistry;
 import com.zhubao.tool.ToolResult;
+import com.zhubao.tool.builtin.BashTool;
 
 import java.nio.file.Path;
+import java.util.function.Supplier;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -60,7 +65,13 @@ public class ChatApp {
     private final SerialToolExecutor toolExecutor;
     private final List<ToolSpec> toolSpecs;
     private final FileHistory fileHistory;
-
+    // M4：上下文管理（统计/告警/压缩/中断）
+    private final ContextCompactor compactor;
+    private final BashTool bashTool;
+    private long sessionTotalIn;              // 会话累计输入（落盘 SessionMeta）
+    private long sessionTotalOut;             // 会话累计输出（落盘 SessionMeta）
+    private int lastInputTokens;              // 最近一次请求 inputTokens（占用读数）
+    private final TurnInterruptController interrupt; // M4 F5：本轮中断控制（信号/逃生门/状态收敛）
     private ProviderConfig provider;          // 当前 provider（含 api_key，仅内存，不落盘）
     private ProviderSnapshot providerSnapshot; // 会话记录的 provider 快照（不含 api_key）
     private Conversation conversation;
@@ -82,6 +93,10 @@ public class ChatApp {
         this.toolSpecs = toolRegistry.all().stream()
                 .map(t -> new ToolSpec(t.name(), t.description(), t.inputSchema()))
                 .toList();
+        // M4：压缩器 + 可中断的 bash 工具引用 + 本轮中断控制器（信号/逃生门）
+        this.compactor = new ContextCompactor();
+        this.bashTool = (BashTool) toolRegistry.byName("bash").orElse(null);
+        this.interrupt = new TurnInterruptController(bashTool);
     }
 
     public void run() {
@@ -92,6 +107,8 @@ public class ChatApp {
             }
             chatLoop();
         } finally {
+            // M4（spec F5）：退出时优雅关闭在途流线程（cancel + join）
+            interrupt.shutdown();
             ui.close();
         }
     }
@@ -140,6 +157,10 @@ public class ChatApp {
         this.sessionMeta = session.getMeta();
         this.conversation = new Conversation(session.getMessages());
         this.providerSnapshot = session.getMeta().provider();
+        // M4（spec F1）：恢复会话累计；占用读数由下一次请求刷新
+        this.sessionTotalIn = session.getMeta().totalInputTokens();
+        this.sessionTotalOut = session.getMeta().totalOutputTokens();
+        this.lastInputTokens = 0;
         this.provider = findProviderForSnapshot(providerSnapshot);
         if (provider == null) {
             ui.println("⚠ 会话记录的 provider 不在当前配置中，已新建会话", Ansi.ERROR);
@@ -160,6 +181,9 @@ public class ChatApp {
         this.conversation = new Conversation();
         Instant now = Instant.now();
         this.sessionMeta = new SessionMeta(SessionMeta.newId(), now, now, "新对话", 0, providerSnapshot);
+        this.sessionTotalIn = 0;
+        this.sessionTotalOut = 0;
+        this.lastInputTokens = 0;
     }
 
     // ── PROVIDER_SELECT：多 provider 时选择，单 provider 直进 ─────────────
@@ -203,10 +227,20 @@ public class ChatApp {
                     saveSession();
                     return;
                 }
+                // M4 F5 逃生门：本轮内二次 Ctrl+C → 优雅退出（消费后清除）
+                if (interrupt.consumeExitRequest()) {
+                    saveSession();
+                    return;
+                }
                 continue;
             }
             sendAndRender(line);
             saveSession();
+            // M4 F5 逃生门：本轮内二次 Ctrl+C → 优雅退出（消费后清除）
+            if (interrupt.consumeExitRequest()) {
+                saveSession();
+                return;
+            }
         }
     }
 
@@ -227,6 +261,7 @@ public class ChatApp {
             case PLAN -> handlePlan(line);
             case UNDO -> handleUndo();
             case REWIND -> handleRewind();
+            case COMPACT -> handleCompact();
             case NONE -> ui.println("⚠ 未知命令，输入 /help 查看帮助", Ansi.ERROR);
         }
         return true;
@@ -294,25 +329,29 @@ public class ChatApp {
         return true;
     }
 
-    /** 发送用户消息并运行 agent 循环（spec F1/F3/F7/F10） */
+    /** 发送用户消息并运行 agent 循环（spec F1/F3/F7/F10 + M4 F1/F2/F3/F5） */
     private void sendAndRender(String userText) {
         ui.println("❯ " + userText, Ansi.USER);
+        maybeAutoCompact();
 
         LlmClient client = LlmClientFactory.create(provider);
         TuiAgentUi agentUi = new TuiAgentUi();
         SerialToolExecutor executor = new SerialToolExecutor(toolRegistry, permissionManager, agentUi,
                 config.uiToolPreviewLines(), fileHistory, sessionMeta.id());
 
-        AgentRunner.Result result = AgentRunner.run(client, conversation, userText,
-                toolSpecs, executor, agentUi, config.toolMaxCallsPerTurn());
+        AgentRunner.Result result = runTurn(() -> AgentRunner.run(client, conversation, userText,
+                toolSpecs, executor, agentUi, config.toolMaxCallsPerTurn(),
+                AgentRunner.STEP_IDLE_TIMEOUT_MS, interrupt::onStreamCreated));
 
         // 清掉可能残留的步骤状态行
         agentUi.clearLeftoverStatus();
         ui.println();
+        // M4 review-P2：先 applyResult 更新占用/累计/中断标记与告警，再 renderResult 展示当前轮真实统计
+        applyResult(result);
         renderResult(result);
     }
 
-    /** 渲染一轮结果（sendAndRender 与计划执行共用） */
+    /** 渲染一轮结果（sendAndRender 与计划执行共用；M4 F1/F4 展示统计） */
     private void renderResult(AgentRunner.Result result) {
         if (result.limitReached()) {
             ui.println("⚠ 已达本轮工具调用上限（" + config.toolMaxCallsPerTurn()
@@ -320,9 +359,102 @@ public class ChatApp {
         } else if (result.error()) {
             ui.println("⚠ " + result.errorMessage(), Ansi.ERROR);
         } else {
+            String cache = "";
+            if (result.cacheReadTokens() > 0 || result.cacheCreationTokens() > 0) {
+                cache = " · cache read " + result.cacheReadTokens()
+                        + " / created " + result.cacheCreationTokens();
+            }
+            int window = provider.effectiveContextWindow();
+            int pct = (int) Math.round(100.0 * lastInputTokens / Math.max(1, window));
             ui.println("── 完成（" + result.stopReason()
-                    + " · in " + result.inputTokens() + " / out " + result.outputTokens() + " tokens）", Ansi.THINKING);
+                    + " · 本轮 in " + result.totalInputTokens() + " / out " + result.totalOutputTokens()
+                    + " · 累计 " + (sessionTotalIn + sessionTotalOut)
+                    + " · 占用 " + pct + "% / " + window + cache + "）", Ansi.THINKING);
         }
+    }
+
+    // ── M4：本轮执行包装（信号处理 / 中断 / 统计）────────────────────
+
+    /** 包一层本轮执行：安装 SIGINT 处理器（含二次 Ctrl+C 逃生门）、结束恢复并 join 在途流（spec F5） */
+    private <T> T runTurn(Supplier<T> task) {
+        interrupt.beginTurn();
+        try {
+            return task.get();
+        } finally {
+            interrupt.endTurn();
+        }
+    }
+
+    /** M4（spec F1/F2/F5）：更新占用/累计；中断写 assistant「（已中断）」标记；达阈值告警 */
+    private void applyResult(AgentRunner.Result result) {
+        if (result.inputTokens() > 0) {
+            // M4 变更控制（2026-08-11）：占用基数按协议口径——Anthropic input_tokens 不含缓存，
+            // 需 + cacheRead 才是真实占用（OpenAI prompt_tokens 已含缓存，occupancyBasis 原样返回）
+            lastInputTokens = provider.occupancyBasis(result.inputTokens(), result.cacheReadTokens());
+        }
+        sessionTotalIn += result.totalInputTokens();
+        sessionTotalOut += result.totalOutputTokens();
+        if (result.interrupted()) {
+            // 变更控制（2026-08-11）：assistant 角色标记，保持 user/assistant 交替，兼容双协议
+            conversation.addAssistant("（已中断）", null, null);
+        }
+        int window = provider.effectiveContextWindow();
+        double ratio = window > 0 ? (double) lastInputTokens / window : 0;
+        if (ratio >= config.contextAlertThreshold()) {
+            ui.println("⚠ 上下文已达 " + (int) Math.round(ratio * 100) + "%（阈值 "
+                    + (int) Math.round(config.contextAlertThreshold() * 100) + "%）", Ansi.ERROR);
+        }
+    }
+
+    /** M4（spec F3）：生成前占用 ≥ 压缩阈值且未熔断 → 自动压缩 */
+    private void maybeAutoCompact() {
+        if (provider == null || lastInputTokens <= 0 || compactor.isAutoDisabled()) {
+            return;
+        }
+        int window = provider.effectiveContextWindow();
+        double ratio = window > 0 ? (double) lastInputTokens / window : 0;
+        if (ratio < config.contextCompactThreshold()) {
+            return;
+        }
+        ui.println("⚠ 上下文占用达 " + (int) Math.round(ratio * 100)
+                + "%（阈值 " + (int) Math.round(config.contextCompactThreshold() * 100) + "%），自动压缩…", Ansi.ERROR);
+        LlmClient client = LlmClientFactory.create(provider);
+        CompactionResult r = runTurn(() -> compactor.compact(conversation, client,
+                CompactionOptions.from(config), null));
+        if (r.isError()) {
+            ui.println("⚠ " + r.errorMessage(), Ansi.ERROR);
+            return;
+        }
+        if (r.compacted()) {
+            ui.println("📦 已压缩：折叠 " + r.foldedTurns() + " 轮 · 丢弃 " + r.droppedTurns()
+                    + " · 截断 " + r.truncatedResults()
+                    + "（缓存已重置，占用以下一次请求复核）", Ansi.STATUS);
+            lastInputTokens = 0;
+            saveSession();
+        }
+    }
+
+    /** M4（spec F3）：手动 /compact——任意时刻触发，不受熔断限制 */
+    private void handleCompact() {
+        if (conversation == null || conversation.messageCount() == 0) {
+            ui.println("会话为空，无需压缩", Ansi.THINKING);
+            return;
+        }
+        LlmClient client = LlmClientFactory.create(provider);
+        CompactionResult r = runTurn(() -> compactor.compact(conversation, client,
+                CompactionOptions.from(config), null));
+        if (r.isError()) {
+            ui.println("⚠ " + r.errorMessage(), Ansi.ERROR);
+            return;
+        }
+        if (!r.compacted()) {
+            ui.println("当前上下文无需压缩", Ansi.THINKING);
+            return;
+        }
+        ui.println("📦 已压缩：折叠 " + r.foldedTurns() + " 轮 · 丢弃 " + r.droppedTurns()
+                + " · 截断 " + r.truncatedResults(), Ansi.STATUS);
+        lastInputTokens = 0;
+        saveSession();
     }
 
     // ── M3：/plan 先计划后执行（spec F2）──────────────────────────────
@@ -342,13 +474,14 @@ public class ChatApp {
             PlanModeExecutor planExecutor = new PlanModeExecutor(toolRegistry, permissionManager, agentUi,
                     config.uiToolPreviewLines());
             AgentRunner.Result plan = first
-                    ? AgentRunner.runPlan(client, conversation, task, toolSpecs, planExecutor, agentUi,
-                            config.toolMaxCallsPerTurn(), AgentRunner.STEP_IDLE_TIMEOUT_MS)
-                    : AgentRunner.runPlanContinue(client, conversation, toolSpecs, planExecutor, agentUi,
-                            config.toolMaxCallsPerTurn(), AgentRunner.STEP_IDLE_TIMEOUT_MS);
+                    ? runTurn(() -> AgentRunner.runPlan(client, conversation, task, toolSpecs, planExecutor, agentUi,
+                            config.toolMaxCallsPerTurn(), AgentRunner.STEP_IDLE_TIMEOUT_MS, interrupt::onStreamCreated))
+                    : runTurn(() -> AgentRunner.runPlanContinue(client, conversation, toolSpecs, planExecutor, agentUi,
+                            config.toolMaxCallsPerTurn(), AgentRunner.STEP_IDLE_TIMEOUT_MS, interrupt::onStreamCreated));
             first = false;
             agentUi.clearLeftoverStatus();
             ui.println();
+            applyResult(plan);
             // /plan 改变了会话（任务/调研/计划/意见/执行），各出口统一落盘（review P2-1，对齐 sendAndRender）
             if (plan.error()) {
                 ui.println("⚠ " + plan.errorMessage(), Ansi.ERROR);
@@ -390,10 +523,12 @@ public class ChatApp {
         TuiAgentUi agentUi = new TuiAgentUi();
         SerialToolExecutor executor = new SerialToolExecutor(toolRegistry, permissionManager, agentUi,
                 config.uiToolPreviewLines(), fileHistory, sessionMeta.id());
-        AgentRunner.Result result = AgentRunner.runExecution(client, conversation, toolSpecs, executor, agentUi,
-                config.toolMaxCallsPerTurn(), AgentRunner.STEP_IDLE_TIMEOUT_MS);
+        AgentRunner.Result result = runTurn(() -> AgentRunner.runExecution(client, conversation, toolSpecs,
+                executor, agentUi, config.toolMaxCallsPerTurn(),
+                AgentRunner.STEP_IDLE_TIMEOUT_MS, interrupt::onStreamCreated));
         agentUi.clearLeftoverStatus();
         ui.println();
+        applyResult(result);
         renderResult(result);
     }
 
@@ -456,6 +591,7 @@ public class ChatApp {
 
         @Override
         public void onStep(String status) {
+            interrupt.onStep();
             stepStatusCleared = false;
             thinkingOpen = false;
             ui.println(status, Ansi.THINKING);
@@ -476,6 +612,7 @@ public class ChatApp {
 
         @Override
         public void onToolCall(ToolCall call) {
+            interrupt.onToolCall();
             clearStepStatus();
             breakThinkingLine();
             ui.println("🔧 " + toolSummary(call), Ansi.HIGHLIGHT);
@@ -614,7 +751,9 @@ public class ChatApp {
                 Instant.now(),
                 conversation.previewTitle(),
                 conversation.messageCount(),
-                providerSnapshot);
+                providerSnapshot,
+                sessionTotalIn,
+                sessionTotalOut);
         this.sessionMeta = refreshed;
         sessionStore.save(new Session(refreshed, conversation.getMessages()));
     }
@@ -631,6 +770,7 @@ public class ChatApp {
         ui.println("  /clear        清屏（保留会话历史）");
         ui.println("  /new          保存当前会话并新建一个会话");
         ui.println("  /permissions  查看「总是允许」清单（/permissions reset 清空）");
+        ui.println("  /compact      手动压缩上下文（折叠最旧轮次为摘要）");
         ui.println("  /exit         退出并保存会话");
         ui.println("当前： " + provider.getName() + " · " + provider.getModel());
     }

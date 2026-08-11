@@ -37,6 +37,12 @@ abstract class AbstractStreamingClient implements LlmClient {
 
     protected final ProviderConfig config;
     private final HttpClient httpClient;
+    // M4 review-P3：流状态为实例字段且 cancelled 永不复位——当前仅「每轮新建 client + 单流串行」下安全；
+    // M5 并发/复用 client 前须重构为 per-call 状态持有者（TODO 已记 M5 ① 前置）。
+    /** 当前流的响应体（供 cancel 关闭以打断阻塞读取；M4，spec F5） */
+    private volatile java.io.InputStream activeBody;
+    /** 当前流是否已被取消（幂等） */
+    private final java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     AbstractStreamingClient(ProviderConfig config) {
         this.config = config;
@@ -44,13 +50,39 @@ abstract class AbstractStreamingClient implements LlmClient {
     }
 
     @Override
-    public final BlockingQueue<StreamEvent> stream(ChatRequest request) {
+    public final LlmStream stream(ChatRequest request) {
         BlockingQueue<StreamEvent> queue = new LinkedBlockingQueue<>();
         // M1 为单线程对话，一次只有一个流；daemon 线程避免阻塞退出
         Thread worker = new Thread(() -> runStream(request, queue), "llm-stream-" + config.getName());
         worker.setDaemon(true);
         worker.start();
-        return queue;
+        return new LlmStream(queue, () -> cancelStream(worker, queue), () -> joinWorker(worker));
+    }
+
+    /** 取消当前流：中断 worker + 关闭响应体 + 投递「已中断」事件（幂等） */
+    private void cancelStream(Thread worker, BlockingQueue<StreamEvent> queue) {
+        if (!cancelled.compareAndSet(false, true)) {
+            return;
+        }
+        worker.interrupt();
+        java.io.InputStream body = activeBody;
+        if (body != null) {
+            try {
+                body.close();
+            } catch (java.io.IOException ignored) {
+                // 关闭失败不影响取消语义
+            }
+        }
+        put(queue, new StreamEvent.Error("已中断"));
+    }
+
+    /** 带超时等待流线程结束（退出时优雅关闭，M4，spec F5） */
+    private void joinWorker(Thread worker) {
+        try {
+            worker.join(3_000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private void runStream(ChatRequest request, BlockingQueue<StreamEvent> queue) {
@@ -65,11 +97,15 @@ abstract class AbstractStreamingClient implements LlmClient {
                 return;
             }
             boolean ended = false;
+            activeBody = response.body();
             try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
+                    new InputStreamReader(activeBody, StandardCharsets.UTF_8))) {
                 SseParser parser = new SseParser();
                 String line;
                 while ((line = reader.readLine()) != null) {
+                    if (cancelled.get()) {
+                        break;
+                    }
                     Optional<SseEvent> eventOpt = parser.feedLine(line);
                     if (eventOpt.isEmpty()) {
                         continue;
@@ -82,13 +118,17 @@ abstract class AbstractStreamingClient implements LlmClient {
                     }
                     handleEvent(sse, queue);
                 }
+            } finally {
+                activeBody = null;
             }
-            if (!ended) {
+            if (!ended && !cancelled.get()) {
                 // 流 EOF 但未收到协议结束事件：兜底，保证调用方不永久阻塞
                 onStreamEof(queue);
             }
         } catch (Exception e) {
-            put(queue, new StreamEvent.Error("请求失败: " + safeMessage(e)));
+            if (!cancelled.get()) {
+                put(queue, new StreamEvent.Error("请求失败: " + safeMessage(e)));
+            }
         }
     }
 

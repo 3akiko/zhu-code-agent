@@ -37,6 +37,8 @@ public final class BashTool implements Tool {
 
     private final PathGuard guard;
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    /** 当前正在执行的进程（M4，spec F5：Ctrl+C 工具中断用；串行执行下同一时刻至多一个） */
+    private volatile Process currentProcess;
 
     public BashTool(PathGuard guard) {
         this.guard = guard;
@@ -81,29 +83,38 @@ public final class BashTool implements Tool {
             pb.redirectInput(ProcessBuilder.Redirect.from(new File("/dev/null")));
             pb.redirectErrorStream(true);
             Process process = pb.start();
-
-            // 先起线程读输出：避免输出超过管道缓冲区（~64KB）时子进程写满阻塞、waitFor 假超时
-            Future<String> outputFuture = OUTPUT_READER.submit(() -> readOutput(process));
-            boolean finished = process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            if (!finished) {
-                killTree(process);
+            currentProcess = process;
+            try {
+                // 先起线程读输出：避免输出超过管道缓冲区（~64KB）时子进程写满阻塞、waitFor 假超时
+                Future<String> outputFuture = OUTPUT_READER.submit(() -> readOutput(process));
+                boolean finished = process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                if (!finished) {
+                    killTree(process);
+                }
+                String output = awaitOutput(outputFuture);
+                if (!finished) {
+                    return ToolResult.error(call, "命令超时（" + TIMEOUT_SECONDS + "s），已终止"
+                            + (output == null || output.isBlank() ? "" : "\n部分输出:\n" + output));
+                }
+                int exit = process.exitValue();
+                String text = output;
+                if (exit != 0) {
+                    text = (text == null ? "" : text) + "\n（退出码 " + exit + "）";
+                    return ToolResult.error(call, text);
+                }
+                return ToolResult.ok(call, text == null ? "" : text);
+            } finally {
+                currentProcess = null;
             }
-            String output = awaitOutput(outputFuture);
-            if (!finished) {
-                return ToolResult.error(call, "命令超时（" + TIMEOUT_SECONDS + "s），已终止"
-                        + (output == null || output.isBlank() ? "" : "\n部分输出:\n" + output));
-            }
-            int exit = process.exitValue();
-            String text = output;
-            if (exit != 0) {
-                text = (text == null ? "" : text) + "\n（退出码 " + exit + "）";
-                return ToolResult.error(call, text);
-            }
-            return ToolResult.ok(call, text == null ? "" : text);
         } catch (IOException e) {
             return ToolResult.error(call, "执行命令失败: " + ReadFileTool.safe(e));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            // M4（spec F5）：中断时销毁进程树，避免遗留子进程
+            Process p = currentProcess;
+            if (p != null && p.isAlive()) {
+                killTree(p);
+            }
             return ToolResult.error(call, "命令执行被中断");
         }
     }
@@ -145,6 +156,17 @@ public final class BashTool implements Tool {
             return future.get(10, TimeUnit.SECONDS);
         } catch (Exception e) {
             return "";
+        }
+    }
+
+    /**
+     * 中断当前正在执行的命令（M4，spec F5）：销毁进程树。
+     * 调用方（Ctrl+C 信号处理器）会同时 interrupt 执行线程，使 waitFor 快速返回。
+     */
+    public void cancel() {
+        Process p = currentProcess;
+        if (p != null && p.isAlive()) {
+            killTree(p);
         }
     }
 

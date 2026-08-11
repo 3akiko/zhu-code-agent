@@ -99,8 +99,12 @@ class AnthropicClientTest {
 
             String body = server.lastRequestBody();
             assertTrue(body.contains("\"model\":\"claude-sonnet-4-5\""));
-            assertTrue(body.contains("\"system\":\"sys\""));
+            // M4（spec F4）：system 为块数组并带 cache_control 断点
+            assertTrue(body.contains("\"system\":[{\"type\":\"text\",\"text\":\"sys\""));
+            assertTrue(body.contains("\"cache_control\":{\"type\":\"ephemeral\"}"));
             assertTrue(body.contains("\"stream\":true"));
+            // M4（spec F7）：thinking 模式 claude-sonnet-4-5 → 64000
+            assertTrue(body.contains("\"max_tokens\":64000"));
             assertTrue(body.contains("\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":32000}"));
             // 多轮回传：assistant 历史消息带 thinking 块与 signature
             assertTrue(body.contains("\"type\":\"thinking\""));
@@ -114,6 +118,8 @@ class AnthropicClientTest {
             AnthropicClient client = new AnthropicClient(provider(server.baseUrl(), false));
             StreamTestSupport.drain(client.stream(new ChatRequest("sys", List.of(new Message(Role.USER, "hi")))), TIMEOUT);
             assertFalse(server.lastRequestBody().contains("\"thinking\""));
+            // M4（spec F7）：plain 模式 claude-sonnet-4-5 → 8192
+            assertTrue(server.lastRequestBody().contains("\"max_tokens\":8192"));
         }
     }
 
@@ -192,6 +198,51 @@ class AnthropicClientTest {
             assertTrue(body.contains("\"tools\":[{\"name\":\"read_file\""));
             assertTrue(body.contains("\"type\":\"tool_use\",\"id\":\"tu1\",\"name\":\"read_file\""));
             assertTrue(body.contains("\"type\":\"tool_result\",\"tool_use_id\":\"tu1\""));
+            // M4（spec F4）：工具定义带 cache_control 断点
+            assertTrue(body.contains("\"cache_control\":{\"type\":\"ephemeral\"}"));
+        }
+    }
+
+    private static final String SSE_CACHE = """
+            event: message_start
+            data: {"type":"message_start","message":{"id":"m","usage":{"input_tokens":100,"output_tokens":1}}}
+
+            event: message_delta
+            data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5,"cache_read_input_tokens":80,"cache_creation_input_tokens":20}}
+
+            event: message_stop
+            data: {"type":"message_stop"}
+
+            """;
+
+    @Test
+    void promptCacheDisabledFallsBackToStringSystemWithoutCacheControl() throws Exception {
+        try (MockHttpServer server = new MockHttpServer((ex, body) -> MockHttpServer.writeSse(ex, SSE_MINIMAL))) {
+            ProviderConfig cfg = provider(server.baseUrl(), false);
+            cfg.setPromptCache(false);
+            AnthropicClient client = new AnthropicClient(cfg);
+            StreamTestSupport.drain(client.stream(new ChatRequest("sys", List.of(new Message(Role.USER, "hi")))), TIMEOUT);
+
+            String body = server.lastRequestBody();
+            // 关闭缓存：system 回退字符串、无 cache_control（M4 review-P2 兼容开关）
+            assertTrue(body.contains("\"system\":\"sys\""));
+            assertFalse(body.contains("cache_control"));
+        }
+    }
+
+    @Test
+    void cacheUsageParsedToStreamEnd() throws Exception {
+        try (MockHttpServer server = new MockHttpServer((ex, body) -> MockHttpServer.writeSse(ex, SSE_CACHE))) {
+            AnthropicClient client = new AnthropicClient(provider(server.baseUrl(), false));
+            List<StreamEvent> events = StreamTestSupport.drain(
+                    client.stream(new ChatRequest("sys", List.of(new Message(Role.USER, "hi")))), TIMEOUT);
+            assertEquals(1, events.size());
+            StreamEvent.StreamEnd end = (StreamEvent.StreamEnd) events.get(0);
+            assertEquals("end_turn", end.stopReason());
+            assertEquals(100, end.inputTokens());
+            assertEquals(5, end.outputTokens());
+            assertEquals(80, end.cacheReadTokens());
+            assertEquals(20, end.cacheCreationTokens());
         }
     }
 }

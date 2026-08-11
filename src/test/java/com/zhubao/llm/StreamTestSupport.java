@@ -6,13 +6,14 @@ import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 
-/** 测试工具：从事件队列取事件直到 StreamEnd/Error 或超时 */
+/** 测试工具：从流句柄取事件直到 StreamEnd/Error 或超时（M4：stream() 返回 LlmStream） */
 final class StreamTestSupport {
 
     private StreamTestSupport() {
     }
 
-    static List<StreamEvent> drain(BlockingQueue<StreamEvent> queue, Duration timeout) throws InterruptedException {
+    static List<StreamEvent> drain(LlmStream stream, Duration timeout) throws InterruptedException {
+        BlockingQueue<StreamEvent> queue = stream.events();
         List<StreamEvent> events = new ArrayList<>();
         long deadline = System.currentTimeMillis() + timeout.toMillis();
         while (true) {

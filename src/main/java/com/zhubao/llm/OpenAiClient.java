@@ -28,6 +28,7 @@ public class OpenAiClient extends AbstractStreamingClient {
 
     private int inputTokens;
     private int outputTokens;
+    private int cacheReadTokens;
     private String stopReason;
     private final Map<Integer, ToolAccum> toolAccums = new LinkedHashMap<>();
 
@@ -45,6 +46,7 @@ public class OpenAiClient extends AbstractStreamingClient {
     protected void onStreamStart() {
         inputTokens = 0;
         outputTokens = 0;
+        cacheReadTokens = 0;
         stopReason = "stop";
         toolAccums.clear();
     }
@@ -63,6 +65,10 @@ public class OpenAiClient extends AbstractStreamingClient {
         body.put("messages", messages);
         body.put("stream", true);
         body.put("stream_options", Map.of("include_usage", true));
+        // M4（spec F7）：OpenAI 仅显式配置 max_tokens 时发送（默认行为不变，避免回归）
+        if (config.getMaxTokens() != null) {
+            body.put("max_tokens", config.getMaxTokens());
+        }
         if (request.tools() != null && !request.tools().isEmpty()) {
             List<Map<String, Object>> tools = new ArrayList<>();
             for (ToolSpec t : request.tools()) {
@@ -152,7 +158,7 @@ public class OpenAiClient extends AbstractStreamingClient {
         if ("[DONE]".equals(sse.data())) {
             // 结束标志：先发累积的工具调用，再发 StreamEnd（含 usage）
             emitToolCalls(queue);
-            put(queue, new StreamEvent.StreamEnd(stopReason, inputTokens, outputTokens));
+            put(queue, new StreamEvent.StreamEnd(stopReason, inputTokens, outputTokens, cacheReadTokens, 0));
             return;
         }
         try {
@@ -189,6 +195,11 @@ public class OpenAiClient extends AbstractStreamingClient {
             if (data.has("usage")) {
                 inputTokens = data.path("usage").path("prompt_tokens").asInt(0);
                 outputTokens = data.path("usage").path("completion_tokens").asInt(0);
+                // M4（spec F4）：OpenAI prompt_tokens_details.cached_tokens / DeepSeek prompt_cache_hit_tokens
+                cacheReadTokens = data.path("usage").path("prompt_tokens_details").path("cached_tokens").asInt(0);
+                if (cacheReadTokens == 0) {
+                    cacheReadTokens = data.path("usage").path("prompt_cache_hit_tokens").asInt(0);
+                }
             }
         } catch (Exception e) {
             put(queue, new StreamEvent.Error("流事件解析失败: " + e.getMessage()));
