@@ -1,0 +1,12 @@
+{
+  "model": "deepseek-v4-flash",
+  "system": "你是 zhuCodeAgent，一个命令行 AI 助手，回答简洁、不超过两句话。",
+  "messages": [
+    {
+      "role": "user",
+      "content": "用一句话介绍你自己。"
+    }
+  ],
+  "max_tokens": 8192,
+  "stream": true
+}

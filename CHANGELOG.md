@@ -4,6 +4,28 @@
 
 ## [Unreleased]
 
+### Added（M4：上下文管理与稳定性，2026-08-12）
+- token 统计与展示：完成行「本轮 in/out · 会话累计 · 占用% / 窗口 · cache read/created」；本轮 in/out 为全部 agent 步骤求和，累计随会话落盘恢复；**占用基数协议感知**（Anthropic `input + cacheRead`、OpenAI `prompt_tokens` 已含缓存，变更控制 2026-08-11）。
+- 上下文占用告警：`context.alert_threshold`（默认 0.8），占用 ≥ 阈值输出「⚠ 上下文已达 P%（阈值 T%）」。
+- 双层渐进压缩：本地瘦身 `snip`（丢弃空/被拒低价值 tool 配对、截断 >64KB tool_result）+ LLM 摘要折叠（最旧 N 轮折叠为「【上下文已压缩】」user 消息）；生成前占用 ≥ `compact_threshold`（默认 0.9）自动触发 + 手动 `/compact` + 连续 3 次失败熔断（自动停用、手动仍可用）。
+- prompt 缓存：Anthropic system/工具定义 `cache_control:{type:ephemeral}` 断点（provider `prompt_cache` 开关，默认 true）；双协议缓存命中解析（Anthropic cache_read/creation、OpenAI cached_tokens、DeepSeek prompt_cache_hit_tokens）并在完成行展示。
+- 流式中断：生成/工具执行中 **Ctrl+C** 取消本轮（半成品回滚、assistant「（已中断）」标记、不追加悬空 tool_use）；**单次不退出**，本轮内 1.5s 连续两次 Ctrl+C = 逃生门优雅退出（对齐 Codex「再按一次退出」）；状态收敛进 `TurnInterruptController`。
+- 会话存储 JSONL：追加写（O(1)）、旧 `.json` 自动迁移、历史收缩整文件重写、损坏行容错、列表去重；会话累计随 meta 行恢复。
+- max_tokens 可配置化：`LlmLimits` 内置模型表（deepseek-v4-flash/pro 1M 窗口、thinking 64000 / plain 8192、opus 32000）+ provider `context_window` / `max_tokens` 覆盖。
+- 配置：`context.*` 小节（alert_threshold / compact_threshold / compact_target / snip_enabled / keep_recent_turns）；provider 增 `context_window` / `max_tokens` / `prompt_cache`。
+- 测试：215 个（+45：LlmLimits / ProviderConfig 占用口径 / ContextCompactor / 中断 / JSONL / mock 端到端 / 真机 demo ①–⑤ 全流程实测）。
+
+### Fixed（M4）
+- **DeepSeek `/anthropic` 端点 `input_tokens` 不含缓存命中**：旧占用口径严重低估（真机 321+1024 只算 321），告警/自动压缩永不触发 → 占用基数协议感知修复（变更控制 2026-08-11，对比样例 `docs/DeepSeek-OpenAI-vs-Anthropic/`）。
+- JLine DumbTerminal 下 `Terminal.handle` 不注册信号 → 改 JVM 级 `Signals.register`（真机复测）。
+- 弱内存模型（Apple Silicon）下逃生门/取消失效 → `TurnInterruptController` 跨线程字段 volatile + `exitRequested` AtomicBoolean + 逃生门粘性（review P2/P3）。
+- JSONL 历史收缩不生效（P1）→ 整文件重写；完成行统计慢一轮（P2）→ `applyResult` 先于 `renderResult`；snip 漏「已拒绝」危险命令（P3）→ lowValue 匹配补全；list 迁移后重复（P3）→ 去重。
+
+### Changed（M4）
+- `LlmClient.stream()` 返回 `LlmStream`（事件队列 + cancel/join）；`StreamEvent.StreamEnd` 增 cacheRead/cacheCreation；`AgentRunner.Result` 增 totalInputTokens/totalOutputTokens/cacheReadTokens/cacheCreationTokens/interrupted。
+- 会话存储从 `.json` 整文件原子写改为 `.jsonl` 追加写（读取兼容旧格式并自动迁移）。
+- `AnthropicClient` 写死 max_tokens 改为模型表/provider 覆盖；`ChatApp` 中断状态收敛进 `TurnInterruptController`。
+
 ### Added（M3：文件编辑增强与 Plan Mode，2026-08-09）
 - diff 展示：`edit_file` / `write_file` 结果内嵌变更 diff（+ 绿 / - 红 / @@ 亮青），TUI 完整展示、`ui.diff_max_lines`（默认 200）超长截断标注，diff 随会话落盘恢复可见。
 - `/plan` 先计划后执行：计划阶段只读调研（write/edit/bash 被拦截、零副作用），模型 end_turn 即计划完成；审批 `y` 执行（写仍按权限模式确认）/ `d` 拒绝 / **任意文本修改意见重新生成**（变更控制 2026-08-09）。

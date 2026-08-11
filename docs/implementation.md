@@ -148,6 +148,52 @@ AgentRunner（agent 包）          消息循环：stream → 事件累积 → �
 5. **/plan 不落盘**：handlePlan 各出口未 saveSession → 统一补齐（review P2-1）。
 
 
+## M4 上下文管理与稳定性
+
+- 状态：已完成（2026-08-12）
+- 对应归档：`docs/milestones/m4/`；验收报告 `docs/验收报告-M4.md`；真机 demo `docs/demo-M4上下文管理.md`（已实测通过）；DeepSeek 双协议对比样例 `docs/DeepSeek-OpenAI-vs-Anthropic/`
+
+### 实现了什么
+
+- **token 统计与展示**：完成行「本轮 in/out（该轮全部步骤求和）· 会话累计（单调累加、随 meta 落盘恢复）· 占用% / 窗口 · cache read/created」；占用基数**协议感知**（`ProviderConfig.occupancyBasis`：Anthropic `input_tokens + cache_read_input_tokens`，OpenAI `prompt_tokens` 已含缓存不重复计，变更控制 2026-08-11）。
+- **接近上限告警**：`context.alert_threshold`（默认 0.8），占用 ≥ 阈值输出「⚠ 上下文已达 P%（阈值 T%）」。
+- **双层渐进压缩**：① 本地瘦身 `ContextCompactor.snip`（丢弃空/「已拒绝执行」/「权限禁止」低价值 tool 配对、截断 >64KB tool_result）+ ② LLM 摘要折叠（最旧 N 轮折叠为带「【上下文已压缩】」标记的 user 摘要、合并进最近段首条真实 user、可再折叠 ≤2 层）；生成前占用 ≥ `compact_threshold`（默认 0.9）自动触发 + 手动 `/compact` 任意时刻 + 连续 3 次失败熔断（自动停用、手动仍可用）。
+- **prompt 缓存**：Anthropic 请求 system（块数组）/ 每个工具定义打 `cache_control:{type:ephemeral}` 断点（provider `prompt_cache` 开关默认 true，关闭回退字符串 system）；双协议缓存命中解析进 `StreamEnd`（Anthropic `cache_read/creation_input_tokens`、OpenAI `prompt_tokens_details.cached_tokens`、DeepSeek `prompt_cache_hit_tokens`）并在完成行展示。
+- **流式中断**：JVM 级 `Signals.register("INT", …)`（DumbTerminal 下 `Terminal.handle` 不注册信号的真机发现）→ 生成中取消当前 `LlmStream`、工具执行中销毁 Bash 进程树；半成品回滚、写 **assistant「（已中断）」**、不追加进行中那轮 tool_use/tool_result（保持 user/assistant 交替、无悬空 tool_use）；**二次 Ctrl+C 逃生门**（本轮内 1.5s 连续两次 → 恢复默认 SIGINT + 优雅退出，对齐 Codex「再按一次退出」）；状态收敛进 `TurnInterruptController`（volatile/AtomicBoolean 修复弱内存模型可见性 + 逃生门粘性）。
+- **会话存储 JSONL**：`SessionStore` 追加写（每 save 一条 last-wins meta 行 + 自 cursor 新消息行，O(1)），旧 `.json` 自动迁移、历史收缩整文件重写、损坏行容错跳过、list 去重；累计随 meta 恢复。
+- **max_tokens 可配置化**：`LlmLimits` 内置模型表（deepseek-v4-flash/pro 1M 窗口、thinking 64000/plain 8192、opus 32000）+ provider `context_window` / `max_tokens` 覆盖。
+- 测试：215 个全绿（+45），含 mock 双协议端到端（统计/压缩/中断/逃生门）与真机 demo ①–⑤ 全流程实测。
+
+### 怎么实现的（关键设计）
+
+- **协议感知占用基数**：Anthropic 协议 `input_tokens` 只含未缓存部分、`cache_read_input_tokens` 单独返回（DeepSeek `/anthropic` 端点与真实 Claude 同约定），占用 = input + cacheRead 才是真实窗口占用；OpenAI `prompt_tokens` 官方语义 = 命中 + 未命中，直接采用。真机对比样例（`docs/DeepSeek-OpenAI-vs-Anthropic/`）证明：OpenAI 第 2 轮 `prompt_tokens=723 = 640 hit + 83 miss`，Anthropic 第 2 轮 `input=42 + cacheRead=768 = 810`——同前缀、语义差一个量级。
+- **压缩不引入本地 tokenizer**：占用/阈值全以 API 返回 usage 为准（spec N1 零依赖），压缩效果由下一次请求复核（`lastInputTokens` 压缩后重置为 0）。
+- **中断 = 信号重定向而非进程退出**：`Signals.register` 在本轮内把 SIGINT 从「终止进程」重定向为「取消本轮」，endTurn 恢复前一个 handler；提示符处的 Ctrl+C 仍由 JLine 处理（退出语义不受影响）。
+- **JSONL last-wins + cursor 追加**：meta 行记录最新快照，加载取最后一条 meta；消息按内存 cursor 只追加新行；检测到历史收缩（消息数 < cursor）→ 整文件重写（review P1 修复）。
+- **会话交替纪律（spec N3）**：中断标记用 assistant「（已中断）」、压缩摘要合并进首条真实 user、不追加悬空 tool_use——保证 user/assistant 交替与双协议回填（M8+ 记录 `/rewind` 回滚记录连续 user 待修项）。
+
+### 与 Claude Code / Codex 的对比（M4）
+
+| 维度 | zhuCodeAgent（M4） | Claude Code / Codex |
+|------|--------------------|--------------------|
+| token 统计/占用 | ✅ 完成行统计 + 占用%（协议感知含缓存） | ✅ 状态行剩余上下文（Codex）；CC 有成本统计 |
+| 上限告警 | ✅ alert_threshold 可配 | ✅ auto-compact 前提示（Codex） |
+| 自动压缩 | ✅ 双层（snip 瘦身 + LLM 摘要折叠）+ 手动 /compact + 熔断 | ✅ CC 四层渐进（snip → microcompact → context collapse → auto-compact，cache-aware）；Codex auto-compact 默认开 |
+| prompt 缓存 | ✅ cache_control 断点 + 双协议命中展示 | ✅ 前缀缓存 + cache-aware 决策 |
+| 流式中断 | ✅ Ctrl+C 取消本轮（半成品回滚）+ 二次逃生门 | ✅ Esc/Ctrl+C 中断（CC）；Codex 二次 Ctrl+C 退出 |
+| 会话存储 | ✅ JSONL 追加写 + 迁移/容错/去重 | ✅ 各自会话/续传机制 |
+| max_tokens | ✅ 模型表 + provider 覆盖 | ✅ 自动/可配 |
+
+### 踩坑记录（M4）
+
+1. **DeepSeek `/anthropic` 端点 `input_tokens` 不含缓存**：真机第 2 轮 input=321 + cacheRead=1024，旧口径只算 321 → 告警/自动压缩永不触发 → 占用基数改为协议感知（变更控制 2026-08-11，对比样例见 `docs/DeepSeek-OpenAI-vs-Anthropic/`）。
+2. **JLine DumbTerminal 信号不注册**：受限 PTY 下 `Terminal.handle` 只存 handler 不注册 → Ctrl+C 直接杀进程 → 改用 JVM 级 `Signals.register`（真机复测通过）。
+3. **弱内存模型逃生门失效**：信号线程写/主线程读无同步 → 逃生门/取消失效 → `TurnInterruptController` 跨线程字段加 volatile、`exitRequested` 改 AtomicBoolean、逃生门粘性跨 runTurn 不清零（review P2/P3）。
+4. **v4-flash 在 anthropic 端点默认思考**：不传 `thinking` 也返回 thinking 块（对比样例实证），`thinking` 参数更像提示而非强制。
+5. **prompt 缓存需长前缀**：短 prompt 两轮 cache=0，长 system + 工具定义后第 2 轮才命中；Anthropic 端点还需显式 `cache_control` 断点。
+6. **中断轮不计累计**：被取消的流拿不到 usage（StreamEnd 未到达），中断轮实际消耗不进会话累计（设计内行为）。
+
+
 ## 路径校验细则（PathGuard / DangerGuard）
 
 > 2026-08-08 补充（review 后文档化，含两处修复：tool_use 参数往返、rm -rf shell 展开拒绝）。

@@ -1,0 +1,24 @@
+{
+  "model": "deepseek-v4-pro",
+  "system": [
+    {
+      "type": "text",
+      "text": "你是 zhuCodeAgent，一个命令行 AI 助手，回答简洁、不超过两句话。",
+      "cache_control": {
+        "type": "ephemeral"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": "用一句话介绍你自己。"
+    }
+  ],
+  "max_tokens": 64000,
+  "stream": true,
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 32000
+  }
+}
