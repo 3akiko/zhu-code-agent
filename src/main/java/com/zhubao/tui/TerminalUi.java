@@ -37,6 +37,12 @@ public class TerminalUi implements AutoCloseable {
     }
 
     /**
+     * 终端输出锁（M5 review 修复 2026-08-13）：并行子任务/权限确认在虚拟线程打印，
+     * System.out 虽线程安全但多线程交错输出会打乱行序与 ANSI 状态——所有写方法统一加锁串行。
+     */
+    private final Object outputLock = new Object();
+
+    /**
      * 读取一行输入（支持方向键编辑与上下翻历史）。
      * 返回 null 表示退出：Ctrl+D（EOF）或 Ctrl+C 中断。
      */
@@ -54,25 +60,33 @@ public class TerminalUi implements AutoCloseable {
 
     /** 带颜色打印（不换行）；ansiCode 为 null 时原样输出 */
     public void print(String text, String ansiCode) {
-        System.out.print(Ansi.color(text, ansiCode));
-        System.out.flush();
+        synchronized (outputLock) {
+            System.out.print(Ansi.color(text, ansiCode));
+            System.out.flush();
+        }
     }
 
     /** 带颜色打印并换行；ansiCode 为 null 时原样输出 */
     public void println(String text, String ansiCode) {
-        System.out.println(Ansi.color(text, ansiCode));
-        System.out.flush();
+        synchronized (outputLock) {
+            System.out.println(Ansi.color(text, ansiCode));
+            System.out.flush();
+        }
     }
 
     public void println(String text) {
-        System.out.println(text);
-        System.out.flush();
+        synchronized (outputLock) {
+            System.out.println(text);
+            System.out.flush();
+        }
     }
 
     /** 打印空行 */
     public void println() {
-        System.out.println();
-        System.out.flush();
+        synchronized (outputLock) {
+            System.out.println();
+            System.out.flush();
+        }
     }
 
     /**

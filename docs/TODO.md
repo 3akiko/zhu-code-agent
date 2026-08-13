@@ -17,7 +17,7 @@
 
 ## 开发中发现的技术债务（2026-08-07 review 记录）
 
-- [ ] **客户端并发安全**（→ **M5 ① 前置**：Subagents/并行的硬前置，roadmap M5 已列入）：`AnthropicClient`/`OpenAiClient` 的流累积状态（inputTokens/outputTokens/stopReason/thinkingAccum 等）是实例字段，同一实例并发 `stream()` 有数据竞争。M1 因「每轮新建实例 + UI 串行」规避；M2 做 subagents 并发前需重构为 per-call 状态持有者。
+- [x] **客户端并发安全**（M5 2026-08-13 完成：per-call `StreamState` 状态持有者 + `LlmClientFactory` 按 provider 名缓存复用；`ConcurrentStreamTest` 覆盖并发两流/cancel 隔离/复用不残留）
 - [x] **max_tokens 可配置化**（M4 2026-08-12 完成：`LlmLimits` 模型表 + provider `context_window`/`max_tokens` 覆盖，F7）。
 - [x] **会话存储性能**（M4 2026-08-12 完成：JSONL 追加写 O(1)，F6）。
 - [ ] **多行输入**（→ 后置 **M8+**：UI 体验类）：M1 单行输入（Enter 即发送）；Shift+Enter 换行需绑定各终端的转义序列 + 多行渲染，属 M2 UI 增强。
@@ -40,3 +40,11 @@
 - [ ] OpenAI 兼容协议 `reasoning_content` 解析（→ **M8+**，roadmap 扩展清单已有）：deepseek-reasoner 等推理模型思考灰字展示
 - [ ] 应用内会话清理命令（→ 后置小工具）：如 `/clear-sessions`；用户可临时用 `rm ~/.zhu-code-agent/sessions/*.json` 手动清
 - [ ] Anthropic 真机验证（→ 可选，需 `ANTHROPIC_API_KEY`；代码路径已被 mock 测试覆盖）
+
+
+## M5 开发中发现的技术债务（2026-08-13）
+
+- [ ] **权限弹窗与其他输出交错**（→ 可后续优化）：并行子任务完成行/工具摘要可能插入到权限弹窗行内（弹窗用 readLine 等待输入、不换行，其他线程输出经 TerminalUi 锁但仍同屏）。方案候选：弹窗期间其他输出暂存/弹窗完成后补打，或弹窗独立区域。
+- [ ] **子任务结果可展开全文**（→ **M8+**，roadmap 已记录）：Task 子任务默认只回填结构化摘要；后续可请求展开子任务完整 transcript（需保留子历史引用 + 二次查询通道）。
+- [ ] **子任务会话不落盘**（→ 设计内，如要可追溯再评估）：子任务仅内存、结果摘要进父会话；如要审计子任务内部过程需独立 JSONL。
+- [ ] **并行子任务写同一文件的冲突检测**（→ 观察项）：并行子任务可能同时写同一路径（M5 接受该风险，由权限确认 + 用户可见兜底；Claude Code 用 worktree 隔离，M8+ 候选）。

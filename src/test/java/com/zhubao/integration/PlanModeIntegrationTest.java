@@ -6,6 +6,7 @@ import com.zhubao.conversation.Conversation;
 import com.zhubao.history.FileHistory;
 import com.zhubao.llm.ChatRequest;
 import com.zhubao.llm.LlmClient;
+import com.zhubao.llm.LlmClientFactory;
 import com.zhubao.llm.LlmStream;
 import com.zhubao.llm.StreamEvent;
 import com.zhubao.llm.ToolSpec;
@@ -18,6 +19,7 @@ import com.zhubao.tool.SerialToolExecutor;
 import com.zhubao.tool.ToolCall;
 import com.zhubao.tool.ToolRegistry;
 import com.zhubao.tool.ToolResult;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -99,6 +101,13 @@ class PlanModeIntegrationTest {
     }
 
     // ── 场景 1：/plan 批准全流程（调研 → 写被拦 → 计划 → 批准执行） ──────────
+
+    @BeforeEach
+    void resetClientCache() {
+        // M5（spec F1.3）：工厂按 provider 名缓存复用单例；每个用例新建 mock server（端口不同），
+        // 需清缓存避免复用上一用例的旧 baseUrl 客户端（否则 ConnectException）。
+        LlmClientFactory.resetCache();
+    }
 
     @Test
     void planApproveResearchesThenExecutesWrite() throws Exception {

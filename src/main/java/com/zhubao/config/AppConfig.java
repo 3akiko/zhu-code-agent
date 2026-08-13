@@ -16,6 +16,9 @@ import java.util.List;
  * @param contextCompactTarget    压缩目标水位（M4，YAML: context.compact_target，默认 0.6）
  * @param contextSnipEnabled      压缩时是否启用本地瘦身（M4，YAML: context.snip_enabled，默认 true）
  * @param contextKeepRecentTurns  压缩折叠后保留的最近轮数（M4，YAML: context.keep_recent_turns，默认 8）
+ * @param agentMaxDepth           子任务嵌套深度上限（M5，YAML: agent.max_subagent_depth，默认 2：父→子→孙封顶）
+ * @param agentMaxParallel        并行子任务上限（M5，YAML: agent.max_parallel_subagents，默认 4）
+ * @param agentMaxStepsPerSubtask 单个子任务步数上限（M5，YAML: agent.max_steps_per_subagent，默认 30）
  */
 public record AppConfig(
         List<ProviderConfig> providers,
@@ -27,7 +30,10 @@ public record AppConfig(
         double contextCompactThreshold,
         double contextCompactTarget,
         boolean contextSnipEnabled,
-        int contextKeepRecentTurns) {
+        int contextKeepRecentTurns,
+        int agentMaxDepth,
+        int agentMaxParallel,
+        int agentMaxStepsPerSubtask) {
 
     /** 会话目录默认值：~/.zhu-code-agent/sessions */
     public static Path defaultSessionsDir() {
@@ -53,4 +59,11 @@ public record AppConfig(
     public static final boolean DEFAULT_CONTEXT_SNIP_ENABLED = true;
     /** 压缩折叠后保留的最近轮数默认值（M4，spec F3） */
     public static final int DEFAULT_CONTEXT_KEEP_RECENT_TURNS = 8;
+
+    /** 子任务嵌套深度上限默认值（M5，spec F3.5）：父→子→孙封顶 */
+    public static final int DEFAULT_AGENT_MAX_DEPTH = 2;
+    /** 并行子任务上限默认值（M5，spec F3.5） */
+    public static final int DEFAULT_AGENT_MAX_PARALLEL = 4;
+    /** 单个子任务步数上限默认值（M5，spec F3.5/F3.10） */
+    public static final int DEFAULT_AGENT_MAX_STEPS_PER_SUBTASK = 30;
 }

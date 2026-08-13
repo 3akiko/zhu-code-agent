@@ -343,4 +343,56 @@ class ConfigLoaderTest {
         assertEquals(4096, provider.effectiveMaxTokens(false));
     }
 
+
+
+    // ── M5：agent.* 护栏 ──────────────────────────────
+    @Test
+    void agentSectionParsedWithDefaultsWhenAbsent() throws Exception {
+        Path p = writeConfig("""
+                providers:
+                  - name: deepseek
+                    protocol: openai
+                    model: deepseek-v4-flash
+                """);
+        AppConfig cfg = ConfigLoader.load(p.toString(), Map.of());
+        assertEquals(2, cfg.agentMaxDepth());
+        assertEquals(4, cfg.agentMaxParallel());
+        assertEquals(30, cfg.agentMaxStepsPerSubtask());
+    }
+
+    @Test
+    void agentSectionOverridden() throws Exception {
+        Path p = writeConfig("""
+                providers:
+                  - name: deepseek
+                    protocol: openai
+                    model: deepseek-v4-flash
+                agent:
+                  max_subagent_depth: 3
+                  max_parallel_subagents: 6
+                  max_steps_per_subagent: 50
+                """);
+        AppConfig cfg = ConfigLoader.load(p.toString(), Map.of());
+        assertEquals(3, cfg.agentMaxDepth());
+        assertEquals(6, cfg.agentMaxParallel());
+        assertEquals(50, cfg.agentMaxStepsPerSubtask());
+    }
+
+    @Test
+    void invalidAgentValueFallsBackToDefault() throws Exception {
+        Path p = writeConfig("""
+                providers:
+                  - name: deepseek
+                    protocol: openai
+                    model: deepseek-v4-flash
+                agent:
+                  max_subagent_depth: -1
+                  max_parallel_subagents: 0
+                  max_steps_per_subagent: abc
+                """);
+        AppConfig cfg = ConfigLoader.load(p.toString(), Map.of());
+        assertEquals(2, cfg.agentMaxDepth());
+        assertEquals(4, cfg.agentMaxParallel());
+        assertEquals(30, cfg.agentMaxStepsPerSubtask());
+    }
 }

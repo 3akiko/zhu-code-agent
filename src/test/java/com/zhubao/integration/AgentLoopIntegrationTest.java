@@ -21,6 +21,7 @@ import com.zhubao.tool.SerialToolExecutor;
 import com.zhubao.tool.ToolCall;
 import com.zhubao.tool.ToolRegistry;
 import com.zhubao.tool.ToolResult;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -184,6 +185,13 @@ class AgentLoopIntegrationTest {
                 .map(t -> new ToolSpec(t.name(), t.description(), t.inputSchema()))
                 .toList();
         return AgentRunner.run(client, conversation, userText, specs, executor, ui, 60);
+    }
+
+    @BeforeEach
+    void resetClientCache() {
+        // M5（spec F1.3）：工厂按 provider 名缓存复用单例；每个用例新建 mock server（端口不同），
+        // 需清缓存避免复用上一用例的旧 baseUrl 客户端（否则 ConnectException）。
+        LlmClientFactory.resetCache();
     }
 
     @Test

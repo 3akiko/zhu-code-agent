@@ -34,6 +34,11 @@ public final class ToolRegistry {
         tools.put(tool.name(), tool);
     }
 
+    /** 外部注册（M5：TaskTool 由装配方注册；测试注册 mock 工具） */
+    public void registerExternal(Tool tool) {
+        register(tool);
+    }
+
     /** 全部内置工具（注册顺序） */
     public List<Tool> all() {
         return List.copyOf(tools.values());

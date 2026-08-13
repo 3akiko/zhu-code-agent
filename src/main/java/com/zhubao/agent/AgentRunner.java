@@ -94,16 +94,16 @@ public final class AgentRunner {
         }
     }
 
-    /** 普通一轮（addUser + NORMAL 提示词） */
+    /** 普通一轮（addUser + NORMAL 提示词）；M5：executor 放宽为 {@link ToolExecutor}（串行/并行可插拔） */
     public static Result run(LlmClient client, Conversation conversation, String userText,
-                             List<ToolSpec> tools, SerialToolExecutor executor,
+                             List<ToolSpec> tools, ToolExecutor executor,
                              AgentUi ui, int maxCallsPerTurn) {
         return run(client, conversation, userText, tools, executor, ui, maxCallsPerTurn, STEP_IDLE_TIMEOUT_MS);
     }
 
     /** 带可注入单步空闲超时（测试用短超时验证超时路径） */
     public static Result run(LlmClient client, Conversation conversation, String userText,
-                             List<ToolSpec> tools, SerialToolExecutor executor,
+                             List<ToolSpec> tools, ToolExecutor executor,
                              AgentUi ui, int maxCallsPerTurn, long stepIdleTimeoutMs) {
         return run(client, conversation, userText, tools, executor, ui, maxCallsPerTurn,
                 stepIdleTimeoutMs, null);
@@ -111,7 +111,7 @@ public final class AgentRunner {
 
     /** M4（spec F5）：普通一轮 + 流句柄回调（ChatApp 用于 Ctrl+C 取消与退出 join） */
     public static Result run(LlmClient client, Conversation conversation, String userText,
-                             List<ToolSpec> tools, SerialToolExecutor executor, AgentUi ui,
+                             List<ToolSpec> tools, ToolExecutor executor, AgentUi ui,
                              int maxCallsPerTurn, long stepIdleTimeoutMs, Consumer<LlmStream> onStream) {
         return runLoop(client, conversation, userText, tools, executor, ui,
                 maxCallsPerTurn, stepIdleTimeoutMs, SYSTEM_PROMPT, true, onStream);
@@ -149,9 +149,9 @@ public final class AgentRunner {
                 maxCallsPerTurn, stepIdleTimeoutMs, PLAN_SYSTEM_PROMPT, false, onStream);
     }
 
-    /** 批准后执行阶段：不再 addUser（会话已含 user+计划+调研结果），正常循环 */
+    /** 批准后执行阶段：不再 addUser（会话已含 user+计划+调研结果），正常循环；M5：executor 放宽 ToolExecutor */
     public static Result runExecution(LlmClient client, Conversation conversation,
-                                      List<ToolSpec> tools, SerialToolExecutor executor, AgentUi ui,
+                                      List<ToolSpec> tools, ToolExecutor executor, AgentUi ui,
                                       int maxCallsPerTurn, long stepIdleTimeoutMs) {
         return runExecution(client, conversation, tools, executor, ui,
                 maxCallsPerTurn, stepIdleTimeoutMs, null);
@@ -159,10 +159,34 @@ public final class AgentRunner {
 
     /** M4（spec F5）：执行阶段 + 流句柄回调 */
     public static Result runExecution(LlmClient client, Conversation conversation,
-                                      List<ToolSpec> tools, SerialToolExecutor executor, AgentUi ui,
+                                      List<ToolSpec> tools, ToolExecutor executor, AgentUi ui,
                                       int maxCallsPerTurn, long stepIdleTimeoutMs, Consumer<LlmStream> onStream) {
         return runLoop(client, conversation, null, tools, executor, ui,
                 maxCallsPerTurn, stepIdleTimeoutMs, SYSTEM_PROMPT, false, onStream);
+    }
+
+    // ── M5（spec F3）：子任务执行 ─────────────────────────────
+
+    /**
+     * 子任务系统提示词：聚焦任务、直接执行工具、不询问用户、最终以简洁报告收尾。
+     * 子任务在独立会话中运行（看不到父历史），结果以摘要回填父 agent（F3.6）。
+     */
+    public static final String SUBTASK_SYSTEM_PROMPT =
+            "You are a sub-agent of zhuCodeAgent, working on an isolated task with your own context. "
+                    + "Complete the assigned task directly using the available tools. "
+                    + "Do NOT ask the user questions; do NOT chat. "
+                    + "Focus strictly on the task scope. "
+                    + "When done, output a concise final report summarizing what you did and the key results.";
+
+    /**
+     * 运行一个子任务（M5，spec F3.2/F3.10）：独立 Conversation（任务描述已由调用方 addUser），
+     * 复用 runLoop，maxCallsPerTurn = 子任务步数上限（独立护栏，不计父计数）。
+     */
+    public static Result runSubtask(LlmClient client, Conversation conversation,
+                                    List<ToolSpec> tools, ToolExecutor executor, AgentUi ui,
+                                    int maxSteps, long stepIdleTimeoutMs, Consumer<LlmStream> onStream) {
+        return runLoop(client, conversation, null, tools, executor, ui,
+                maxSteps, stepIdleTimeoutMs, SUBTASK_SYSTEM_PROMPT, false, onStream);
     }
 
     /**

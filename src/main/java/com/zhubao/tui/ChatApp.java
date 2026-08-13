@@ -22,10 +22,11 @@ import com.zhubao.session.ProviderSnapshot;
 import com.zhubao.session.Session;
 import com.zhubao.session.SessionMeta;
 import com.zhubao.session.SessionStore;
+import com.zhubao.tool.ParallelToolExecutor;
 import com.zhubao.tool.PathGuard;
 import com.zhubao.tool.PlanModeExecutor;
 import com.zhubao.tool.RenderHint;
-import com.zhubao.tool.SerialToolExecutor;
+import com.zhubao.tool.TaskTool;
 import com.zhubao.tool.ToolCall;
 import com.zhubao.tool.ToolRegistry;
 import com.zhubao.tool.ToolResult;
@@ -62,8 +63,12 @@ public class ChatApp {
 
     private final ToolRegistry toolRegistry;
     private final PermissionManager permissionManager;
-    private final SerialToolExecutor toolExecutor;
     private final List<ToolSpec> toolSpecs;
+    /** M5（spec F3）：task 工具（装配后注册进 registry；运行上下文每轮注入最新 agentUi/sessionId） */
+    private final TaskTool taskTool;
+    /** M5（spec F3.4/T9）：权限确认全局串行锁——主会话与所有子任务同一时刻只有一个弹窗在读输入 */
+    private final java.util.concurrent.locks.ReentrantLock permissionLock =
+            new java.util.concurrent.locks.ReentrantLock();
     private final FileHistory fileHistory;
     // M4：上下文管理（统计/告警/压缩/中断）
     private final ContextCompactor compactor;
@@ -88,8 +93,18 @@ public class ChatApp {
         PathGuard guard = new PathGuard(workspace);
         this.toolRegistry = new ToolRegistry(guard, config.uiDiffMaxLines());
         this.permissionManager = new PermissionManager(toolRegistry);
-        this.toolExecutor = new SerialToolExecutor(toolRegistry, permissionManager, null, config.uiToolPreviewLines());
         this.fileHistory = new FileHistory(defaultSnapshotsRoot(), guard);
+        // M5（spec F3）：装配 task 工具并注册进 registry（toolSpecs 构建前，使 task 进入工具定义）
+        this.taskTool = new TaskTool();
+        this.taskTool.setClientProvider(() -> LlmClientFactory.create(provider));
+        this.taskTool.setRegistry(toolRegistry);
+        this.taskTool.setPermissions(permissionManager);
+        this.taskTool.setHistory(fileHistory);
+        this.taskTool.setMaxDepth(config.agentMaxDepth());
+        this.taskTool.setMaxParallel(config.agentMaxParallel());
+        this.taskTool.setMaxSteps(config.agentMaxStepsPerSubtask());
+        this.taskTool.setPreviewLines(config.uiToolPreviewLines());
+        toolRegistry.registerExternal(taskTool);
         this.toolSpecs = toolRegistry.all().stream()
                 .map(t -> new ToolSpec(t.name(), t.description(), t.inputSchema()))
                 .toList();
@@ -336,7 +351,10 @@ public class ChatApp {
 
         LlmClient client = LlmClientFactory.create(provider);
         TuiAgentUi agentUi = new TuiAgentUi();
-        SerialToolExecutor executor = new SerialToolExecutor(toolRegistry, permissionManager, agentUi,
+        // M5（spec F2/F3）：并行工具执行器；task 工具注入当前轮 UI 与会话（子任务快照进父会话链）
+        taskTool.setUi(agentUi);
+        taskTool.setSessionId(sessionMeta.id());
+        ParallelToolExecutor executor = new ParallelToolExecutor(toolRegistry, permissionManager, agentUi,
                 config.uiToolPreviewLines(), fileHistory, sessionMeta.id());
 
         AgentRunner.Result result = runTurn(() -> AgentRunner.run(client, conversation, userText,
@@ -521,7 +539,9 @@ public class ChatApp {
     private void executePlannedTurn() {
         LlmClient client = LlmClientFactory.create(provider);
         TuiAgentUi agentUi = new TuiAgentUi();
-        SerialToolExecutor executor = new SerialToolExecutor(toolRegistry, permissionManager, agentUi,
+        taskTool.setUi(agentUi);
+        taskTool.setSessionId(sessionMeta.id());
+        ParallelToolExecutor executor = new ParallelToolExecutor(toolRegistry, permissionManager, agentUi,
                 config.uiToolPreviewLines(), fileHistory, sessionMeta.id());
         AgentRunner.Result result = runTurn(() -> AgentRunner.runExecution(client, conversation, toolSpecs,
                 executor, agentUi, config.toolMaxCallsPerTurn(),
@@ -588,12 +608,15 @@ public class ChatApp {
         private boolean stepStatusCleared;
         /** 当前行以思考灰字开头、尚未换行：遇到正文/工具摘要/结果预览时先换行（思考与正文分行） */
         private boolean thinkingOpen;
+        /** 当前行有流式正文、尚未换行：工具摘要/子任务行打印前先换行（正文与工具摘要分行，M5 review 修复） */
+        private boolean textOpen;
 
         @Override
         public void onStep(String status) {
             interrupt.onStep();
             stepStatusCleared = false;
             thinkingOpen = false;
+            textOpen = false;
             ui.println(status, Ansi.THINKING);
         }
 
@@ -603,6 +626,7 @@ public class ChatApp {
                 clearStepStatus();
                 breakThinkingLine();
                 ui.print(td.text(), null);
+                textOpen = true;
             } else if (event instanceof StreamEvent.ThinkingDelta td) {
                 clearStepStatus();
                 ui.print(td.text(), Ansi.THINKING);
@@ -615,12 +639,14 @@ public class ChatApp {
             interrupt.onToolCall();
             clearStepStatus();
             breakThinkingLine();
+            breakTextLine();
             ui.println("🔧 " + toolSummary(call), Ansi.HIGHLIGHT);
         }
 
         @Override
         public void onToolResult(ToolResult result, int previewLines) {
             breakThinkingLine();
+            breakTextLine();
             if (result.renderHint() == RenderHint.FULL) {
                 // M3 spec F1：diff 完整彩色展示（+ 绿 / - 红 / @@ 亮青）
                 ui.println("└ " + result.name() + " → " + coloredDiff(result.output()), null);
@@ -664,22 +690,66 @@ public class ChatApp {
 
         @Override
         public PermissionChoice askPermission(ToolCall call) {
-            String prompt = "[权限] " + toolSummary(call) + " → 允许(a) / 拒绝(d) / 总是允许本次(s)？(输入后回车)";
-            while (true) {
-                char c = ui.readSingleKey(prompt + " ");
-                switch (Character.toLowerCase(c)) {
-                    case 'a' -> {
-                        return PermissionChoice.ALLOW;
+            // M5（spec F3.4/T9）：权限确认全局串行——同一时刻只有一个弹窗在读输入
+            // （主会话与并行子任务共用一把锁；子任务弹窗由 SubagentUi 先标注来源再转发到这里）
+            permissionLock.lock();
+            try {
+                String prompt = "[权限] " + toolSummary(call) + " → 允许(a) / 拒绝(d) / 总是允许本次(s)？(输入后回车)";
+                while (true) {
+                    char c = ui.readSingleKey(prompt + " ");
+                    switch (Character.toLowerCase(c)) {
+                        case 'a' -> {
+                            return PermissionChoice.ALLOW;
+                        }
+                        case 'd' -> {
+                            return PermissionChoice.DENY;
+                        }
+                        case 's' -> {
+                            return PermissionChoice.ALLOW_ALWAYS;
+                        }
+                        default -> ui.println("（请按 a/d/s）", Ansi.THINKING);
                     }
-                    case 'd' -> {
-                        return PermissionChoice.DENY;
-                    }
-                    case 's' -> {
-                        return PermissionChoice.ALLOW_ALWAYS;
-                    }
-                    default -> ui.println("（请按 a/d/s）", Ansi.THINKING);
                 }
+            } finally {
+                permissionLock.unlock();
+                // M5 review（真机 P1）：JLine readLine 弹窗结束后重新注册 SIGINT，保证工具执行中 Ctrl+C 走级联中断
+                interrupt.rearmSignalHandler();
             }
+        }
+
+        // ── M5（spec F3.9/F3.4）：子任务折叠单行 + 权限来源标注 ─────
+        @Override
+        public void onSubtaskStart(int id, String promptPreview) {
+            breakThinkingLine();
+            breakTextLine();
+            ui.println("⏳ 子任务#" + id + ": " + promptPreview + "…", Ansi.HIGHLIGHT);
+        }
+
+        @Override
+        public void onSubtaskEnd(int id, String summary) {
+            breakThinkingLine();
+            breakTextLine();
+            ui.println("✓ 子任务#" + id + ": " + truncate(summary, 120), Ansi.STATUS);
+        }
+
+        @Override
+        public void onSubtaskPermission(int id, ToolCall call) {
+            breakThinkingLine();
+            breakTextLine();
+            ui.println("[子任务#" + id + "] 请求权限: " + toolSummary(call), Ansi.HIGHLIGHT);
+        }
+
+        /** 流式正文未换行时先换行（正文与工具摘要/子任务行分行） */
+        private void breakTextLine() {
+            if (textOpen) {
+                ui.println();
+                textOpen = false;
+            }
+        }
+
+        /** 权限确认结束（M5 review 修复：JLine readLine 可能覆盖 SIGINT，重新注册本轮 handler） */
+        void rearmAfterPermission() {
+            interrupt.rearmSignalHandler();
         }
 
         void clearLeftoverStatus() {
@@ -687,6 +757,8 @@ public class ChatApp {
                 ui.clearPreviousLine();
                 stepStatusCleared = true;
             }
+            thinkingOpen = false;
+            textOpen = false;
         }
 
         private void clearStepStatus() {

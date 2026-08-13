@@ -26,29 +26,16 @@ import java.util.concurrent.BlockingQueue;
  */
 public class OpenAiClient extends AbstractStreamingClient {
 
-    private int inputTokens;
-    private int outputTokens;
-    private int cacheReadTokens;
-    private String stopReason;
-    private final Map<Integer, ToolAccum> toolAccums = new LinkedHashMap<>();
-
-    private static final class ToolAccum {
-        String id = "";
-        String name = "";
-        final StringBuilder args = new StringBuilder();
-    }
-
     public OpenAiClient(ProviderConfig config) {
         super(config);
     }
 
+    /** per-call 状态：OpenAI 协议（多 index tool_calls 累积），M5 spec F1 */
     @Override
-    protected void onStreamStart() {
-        inputTokens = 0;
-        outputTokens = 0;
-        cacheReadTokens = 0;
-        stopReason = "stop";
-        toolAccums.clear();
+    protected StreamState newStreamState() {
+        OpenAiStreamState s = new OpenAiStreamState();
+        s.stopReason = "stop";
+        return s;
     }
 
     @Override
@@ -154,11 +141,12 @@ public class OpenAiClient extends AbstractStreamingClient {
     }
 
     @Override
-    protected void handleEvent(SseEvent sse, BlockingQueue<StreamEvent> queue) {
+    protected void handleEvent(SseEvent sse, BlockingQueue<StreamEvent> queue, StreamState state) {
+        OpenAiStreamState s = (OpenAiStreamState) state;
         if ("[DONE]".equals(sse.data())) {
             // 结束标志：先发累积的工具调用，再发 StreamEnd（含 usage）
-            emitToolCalls(queue);
-            put(queue, new StreamEvent.StreamEnd(stopReason, inputTokens, outputTokens, cacheReadTokens, 0));
+            emitToolCalls(queue, s);
+            put(queue, new StreamEvent.StreamEnd(s.stopReason, s.inputTokens, s.outputTokens, s.cacheReadTokens, 0));
             return;
         }
         try {
@@ -172,13 +160,14 @@ public class OpenAiClient extends AbstractStreamingClient {
                 }
                 String finish = choice.path("finish_reason").asText("");
                 if (!finish.isEmpty()) {
-                    stopReason = finish;
+                    s.stopReason = finish;
                 }
                 JsonNode toolCalls = choice.path("delta").path("tool_calls");
                 if (toolCalls.isArray()) {
                     for (JsonNode tc : toolCalls) {
                         int index = tc.path("index").asInt(0);
-                        ToolAccum acc = toolAccums.computeIfAbsent(index, k -> new ToolAccum());
+                        OpenAiStreamState.ToolAccum acc =
+                                s.toolAccums.computeIfAbsent(index, k -> new OpenAiStreamState.ToolAccum());
                         if (tc.hasNonNull("id")) {
                             acc.id = tc.path("id").asText();
                         }
@@ -193,12 +182,12 @@ public class OpenAiClient extends AbstractStreamingClient {
                 }
             }
             if (data.has("usage")) {
-                inputTokens = data.path("usage").path("prompt_tokens").asInt(0);
-                outputTokens = data.path("usage").path("completion_tokens").asInt(0);
+                s.inputTokens = data.path("usage").path("prompt_tokens").asInt(0);
+                s.outputTokens = data.path("usage").path("completion_tokens").asInt(0);
                 // M4（spec F4）：OpenAI prompt_tokens_details.cached_tokens / DeepSeek prompt_cache_hit_tokens
-                cacheReadTokens = data.path("usage").path("prompt_tokens_details").path("cached_tokens").asInt(0);
-                if (cacheReadTokens == 0) {
-                    cacheReadTokens = data.path("usage").path("prompt_cache_hit_tokens").asInt(0);
+                s.cacheReadTokens = data.path("usage").path("prompt_tokens_details").path("cached_tokens").asInt(0);
+                if (s.cacheReadTokens == 0) {
+                    s.cacheReadTokens = data.path("usage").path("prompt_cache_hit_tokens").asInt(0);
                 }
             }
         } catch (Exception e) {
@@ -206,14 +195,14 @@ public class OpenAiClient extends AbstractStreamingClient {
         }
     }
 
-    /** 按 index 升序发出全部累积的工具调用 */
-    private void emitToolCalls(BlockingQueue<StreamEvent> queue) {
-        List<Integer> indexes = new ArrayList<>(toolAccums.keySet());
+    /** 按 index 升序发出全部累积的工具调用（状态在 per-call state 内） */
+    private void emitToolCalls(BlockingQueue<StreamEvent> queue, OpenAiStreamState s) {
+        List<Integer> indexes = new ArrayList<>(s.toolAccums.keySet());
         indexes.sort(Comparator.naturalOrder());
         for (int idx : indexes) {
-            ToolAccum acc = toolAccums.get(idx);
+            OpenAiStreamState.ToolAccum acc = s.toolAccums.get(idx);
             put(queue, new StreamEvent.ToolCall(acc.id, acc.name, acc.args.toString()));
         }
-        toolAccums.clear();
+        s.toolAccums.clear();
     }
 }

@@ -118,8 +118,13 @@ public class ConfigLoader {
         double compactTarget = nestedDouble(map, "context", "compact_target", AppConfig.DEFAULT_CONTEXT_COMPACT_TARGET);
         boolean snipEnabled = nestedBool(map, "context", "snip_enabled", AppConfig.DEFAULT_CONTEXT_SNIP_ENABLED);
         int keepRecentTurns = nestedInt(map, "context", "keep_recent_turns", AppConfig.DEFAULT_CONTEXT_KEEP_RECENT_TURNS);
+        // M5：Subagents 护栏（agent.*）
+        int agentMaxDepth = nestedInt(map, "agent", "max_subagent_depth", AppConfig.DEFAULT_AGENT_MAX_DEPTH);
+        int agentMaxParallel = nestedInt(map, "agent", "max_parallel_subagents", AppConfig.DEFAULT_AGENT_MAX_PARALLEL);
+        int agentMaxSteps = nestedInt(map, "agent", "max_steps_per_subagent", AppConfig.DEFAULT_AGENT_MAX_STEPS_PER_SUBTASK);
         return new AppConfig(List.copyOf(providers), sessionsDir, toolMaxCalls, uiPreviewLines, uiDiffMaxLines,
-                alertThreshold, compactThreshold, compactTarget, snipEnabled, keepRecentTurns);
+                alertThreshold, compactThreshold, compactTarget, snipEnabled, keepRecentTurns,
+                agentMaxDepth, agentMaxParallel, agentMaxSteps);
     }
 
     /** 读取嵌套映射中的整数（如 tool.max_calls_per_turn）；缺失/非正整数 → 默认值 */

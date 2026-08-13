@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+## [Unreleased]
+
+### Added（M5：并行与 Subagents，2026-08-13）
+- **客户端并发安全重构（硬前置）**：LLM 客户端流累积状态改为 **per-call `StreamState` 持有者**（基类 + Anthropic/OpenAi 子类），同一实例可并发 `stream()`、可复用；`LlmClientFactory` 按 provider 名**缓存复用单例**；`cancelled` 随 per-call 状态复位。
+- **并行工具执行**：新增 `AbstractToolExecutor`（公共单调用逻辑）+ `ParallelToolExecutor`——只读工具 ∪ `task` 段内 **Java 21 虚拟线程**并行、write/edit/bash 串行、**结果严格按原调用顺序回填**、单失败不拖垮段、Ctrl+C 中断在途读段；`SerialToolExecutor` 继承 Abstract（行为不变）。
+- **Subagents / Task**：第 7 个内置工具 `task`——父 agent ReAct 中调用即派生**独立会话**子任务（内存隔离、不落盘）；`AgentRunner.runSubtask` + 子任务提示词；**三层护栏**（嵌套深度默认 2（深度封顶工具池裁剪 task）+ 并行子任务上限 4 + 子任务步数上限 30）；**权限继承**（父已批准自动放行、未批准回主 UI 确认 + `[子任务#N]` 来源标注 + 全局串行锁一次一弹窗）；**结构化摘要回填**（状态+摘要截断+token，走 tool_result 通道，双协议/N3 兼容）；**并行子任务**；**级联中断**（`SubagentCoordinator.cancelAll()`，摘要标记「被中断」）；`agent:` 配置（`max_subagent_depth` / `max_parallel_subagents` / `max_steps_per_subagent`）。
+
+### Fixed（M5）
+- 工具摘要行与流式正文粘连（正文未换行时 `🔧` 接在同一行 → `textOpen` 分行）。
+- 真机权限弹窗后 Ctrl+C 直接退出进程（JLine readLine 接管 SIGINT → 弹窗后 `rearmSignalHandler()`）。
+- 并行 bash 进程泄漏（单 `currentProcess` 引用被覆盖 → 并发集合统一销毁）。
+- /plan 计划阶段可经 `task` 绕过只读约束（拦截集加 task）。
+
+### Changed（M5）
+- `ChatApp` 主循环改用 `ParallelToolExecutor`；`TerminalUi` 输出加锁串行化；`AgentRunner.run/runExecution` 参数放宽为 `ToolExecutor`；`ToolRegistry` 支持外部注册工具。
+- 测试：新增 `ConcurrentStreamTest` / `ParallelToolExecutorTest` / `TaskToolTest` / `SubagentIntegrationTest` / `BashToolParallelInterruptTest`；全量 **245 个测试全绿**（M1–M4 的 215 不回归 + M5 新增 30）。
+
 ### Added（M4：上下文管理与稳定性，2026-08-12）
 - token 统计与展示：完成行「本轮 in/out · 会话累计 · 占用% / 窗口 · cache read/created」；本轮 in/out 为全部 agent 步骤求和，累计随会话落盘恢复；**占用基数协议感知**（Anthropic `input + cacheRead`、OpenAI `prompt_tokens` 已含缓存，变更控制 2026-08-11）。
 - 上下文占用告警：`context.alert_threshold`（默认 0.8），占用 ≥ 阈值输出「⚠ 上下文已达 P%（阈值 T%）」。

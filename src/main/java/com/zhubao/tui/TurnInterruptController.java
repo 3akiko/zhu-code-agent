@@ -1,5 +1,6 @@
 package com.zhubao.tui;
 
+import com.zhubao.agent.SubagentCoordinator;
 import com.zhubao.llm.LlmStream;
 import com.zhubao.tool.builtin.BashTool;
 import org.jline.utils.Signals;
@@ -97,6 +98,16 @@ final class TurnInterruptController {
         activeStream = stream;
     }
 
+    /**
+     * 重新注册本轮 SIGINT handler（M5 review 修复 2026-08-13，真机 P1）：
+     * JLine readLine（权限确认弹窗）在真机（PosixSysTerminal）会临时接管 SIGINT，弹窗结束后
+     * 可能把 INT 处理恢复为默认——此后工具执行中 Ctrl+C 会直接退出进程而不是级联中断。
+     * 权限弹窗结束后调用本方法，确保剩余工具执行阶段 Ctrl+C 仍走本轮中断语义。
+     */
+    void rearmSignalHandler() {
+        intSignalToken = Signals.register("INT", this::onCtrlC);
+    }
+
     void onStep() {
         phase = Phase.GENERATING;
     }
@@ -132,6 +143,8 @@ final class TurnInterruptController {
             if (bashTool != null) {
                 bashTool.cancel();
             }
+            // M5（spec F3.8）：级联中断所有在途子任务线程（生成 poll / 工具 isInterrupted / 权限 readLine 均被打断）
+            SubagentCoordinator.cancelAll();
         }
         if (chatThread != null) {
             chatThread.interrupt();
