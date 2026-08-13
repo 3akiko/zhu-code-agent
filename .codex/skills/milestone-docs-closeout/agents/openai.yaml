@@ -1,0 +1,4 @@
+interface:
+  display_name: "里程碑文档收尾"
+  short_description: "里程碑完成时更新项目全部重要文档（简历/面试题/验收报告/交接/README/CHANGELOG 等）"
+  default_prompt: "做一下 M5 的文档收尾"

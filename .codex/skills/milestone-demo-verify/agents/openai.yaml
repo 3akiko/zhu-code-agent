@@ -1,0 +1,4 @@
+interface:
+  display_name: "里程碑 Demo 生成与真机验证"
+  short_description: "按里程碑代码变更生成/更新 demo 文档并在本地真机完整验证"
+  default_prompt: "按本次 M5 变更生成 demo 并真机验证"
