@@ -21,8 +21,8 @@
 
 ## 3. 里程碑总览
 
-  里程碑   名称   优先级   一句话目标   状态  
- -------- ------|--------|-----------|------|
+| 里程碑 | 名称 | 优先级 | 一句话目标 | 状态 |
+|--------|------|--------|-----------|------|
 | M1 | 聊天 TUI + 会话持久化 | P0 | 彩色终端 TUI + 流式输出 + 多轮记忆 + 双后端 + extended thinking + 会话落盘/恢复 | ✅ 已完成（2026-08-07） |
 | M2 | Agent 循环与 Tool Use | P0 | 模型输出工具调用 → 执行内置工具 → 结果回填循环，含权限确认 | ✅ 已完成（2026-08-08） |
 | M3 | 文件编辑增强与 Plan Mode | P0 | diff 展示、/plan 先计划后执行、文件快照回滚、权限模式 | ✅ 已完成（2026-08-09） |
@@ -125,12 +125,12 @@
 | extended thinking | ✅ 已完成（M1）：灰色小字展示 + 多轮回传 | ✅ 沿用 M1 | ✅ 沿用 M1 | ✅ 沿用 M1 | 有（可展开） | 有（reasoning） |
 | 工具调用 | 未做 | ✅ 已完成：6 内置工具 + Agent 循环 + 双协议 | ✅ 沿用 M2 | ✅ 沿用 M2 | ✅ 并行执行（读段虚拟线程并行/写·bash 串行/保序；tool + task 归并行段） | 有 | 有 |
 | 权限控制 | 未做 | ✅ 部分：只读自动 + 写类/bash 行内确认 + 总是允许（内存） | ✅ 三档模式：normal / acceptEdits / bypassPermissions（危险命令仍强制确认，红线不削弱） | ✅ 沿用 M3 | ✅ 并行确认串行化（全局锁一次一弹窗）+ 子任务权限回主 UI（来源标注）+ 父已批准继承不二次确认 | 有（plan/acceptEdits/bypass） | 有（plan/auto） |
-| diff 展示 / undo 回滚 | 未做 | 未做（留 M3） | ✅ diff 内嵌彩色展示 + 全量快照 /undo /rewind（跨会话） | ✅ 沿用 M3 | 有（FileSnapshotService 快照） | diff 高亮；回滚靠 git |
+| diff 展示 / undo 回滚 | 未做 | 未做（留 M3） | ✅ diff 内嵌彩色展示 + 全量快照 /undo /rewind（跨会话） | ✅ 沿用 M3 | ✅ 沿用 M3（子任务写文件快照进父会话链，/undo 可回滚） | 有（FileSnapshotService 快照） | diff 高亮；回滚靠 git |
 | 会话恢复 | ✅ 已完成（M1）：启动选择恢复 | ✅ 工具消息随会话落盘，恢复后循环上下文完整 | ✅ 沿用 M2（快照按会话隔离） | ✅ JSONL 追加写 + 会话累计随 meta 恢复 | 有（--resume/--continue） | 有（--resume/--continue） |
 | 上下文管理 | 未做 | 未做 | 未做（M4 规划） | ✅ M4 已完成：token 统计/占用%（**协议感知含缓存**：Anthropic input+cacheRead、OpenAI prompt_tokens）/上限告警/双层渐进压缩（snip 瘦身 + LLM 摘要折叠）/自动 + 手动 /compact/熔断/prompt 缓存（cache_control 断点 + 双协议命中展示）/流式中断 | ✅ 沿用 M4（子任务摘要经 tool_result 回填进父会话，占用/压缩兼容） | 有：四层渐进压缩（snip → microcompact → context collapse → auto-compact，含 cache-aware 决策）+ /compact + prompt 缓存 | 有：auto-compact 默认开（可配 model_context_window / model_auto_compact_token_limit）+ /compact + 状态行剩余上下文 |
 | MCP / Subagents / Hooks / Skills | 未做 | 未做 | 未做 | 未做（M5 Subagents / M6 MCP·Hooks·Skills 规划） | ✅ Subagents：task 工具派生子任务（独立会话/权限继承/三层护栏/工具池裁剪/摘要回填/并行子任务/级联中断）；MCP/Hooks/Skills 未做（M6） | 有（MCP + subagents + hooks + skills） | 有（MCP client + subagents + hooks + skills，2026 起 GA） |
-| OS 级沙箱 | 未做 | 未做 | 未做 | 未做（M7 规划：macOS Seatbelt） | 无原生 OS 沙箱（权限确认 + 快照回滚） | 有（read-only / workspace-write / danger-full-access：macOS Seatbelt / Linux Landlock+Bubblewrap） |
-| 技术栈 | Java 21 | Java 21（同左） | Java 21（同左） | Java 21（同左） | TypeScript/Node | Rust |
+| OS 级沙箱 | 未做 | 未做 | 未做 | 未做（M7 规划：macOS Seatbelt） | 未做（M7 规划） | 无原生 OS 沙箱（权限确认 + 快照回滚） | 有（read-only / workspace-write / danger-full-access：macOS Seatbelt / Linux Landlock+Bubblewrap） |
+| 技术栈 | Java 21 | Java 21（同左） | Java 21（同左） | Java 21（同左） | Java 21（虚拟线程做并行执行） | TypeScript/Node | Rust |
 
 ## 6. 文档与记录规范
 
