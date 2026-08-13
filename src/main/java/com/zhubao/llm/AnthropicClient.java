@@ -27,39 +27,16 @@ public class AnthropicClient extends AbstractStreamingClient {
     private static final String API_VERSION = "2023-06-01";
     private static final int THINKING_BUDGET_TOKENS = 32000;
 
-    // 每个流的状态（M1 单线程对话，一次只有一个流，字段级状态足够）
-    private int inputTokens;
-    private int outputTokens;
-    private int cacheReadTokens;
-    private int cacheCreationTokens;
-    private String stopReason;
-    private boolean inThinking;
-    private final StringBuilder thinkingAccum = new StringBuilder();
-    private String thinkingSignature;
-    // 工具调用累积（M2）
-    private boolean inToolUse;
-    private String toolUseId;
-    private String toolUseName;
-    private final StringBuilder toolUseJsonAccum = new StringBuilder();
-
     public AnthropicClient(ProviderConfig config) {
         super(config);
     }
 
+    /** per-call 状态：Anthropic 协议（thinking + 单块 tool_use 累积），M5 spec F1 */
     @Override
-    protected void onStreamStart() {
-        inputTokens = 0;
-        outputTokens = 0;
-        cacheReadTokens = 0;
-        cacheCreationTokens = 0;
-        stopReason = "end_turn";
-        inThinking = false;
-        thinkingAccum.setLength(0);
-        thinkingSignature = "";
-        inToolUse = false;
-        toolUseId = "";
-        toolUseName = "";
-        toolUseJsonAccum.setLength(0);
+    protected StreamState newStreamState() {
+        AnthropicStreamState s = new AnthropicStreamState();
+        s.stopReason = "end_turn";
+        return s;
     }
 
     @Override
@@ -166,23 +143,24 @@ public class AnthropicClient extends AbstractStreamingClient {
     }
 
     @Override
-    protected void handleEvent(SseEvent sse, BlockingQueue<StreamEvent> queue) {
+    protected void handleEvent(SseEvent sse, BlockingQueue<StreamEvent> queue, StreamState state) {
+        AnthropicStreamState s = (AnthropicStreamState) state;
         try {
             JsonNode data = MAPPER.readTree(sse.data());
             switch (sse.event() == null ? "" : sse.event()) {
-                case "message_start" -> inputTokens =
+                case "message_start" -> s.inputTokens =
                         data.path("message").path("usage").path("input_tokens").asInt(0);
                 case "content_block_start" -> {
                     String type = data.path("content_block").path("type").asText("");
                     if ("thinking".equals(type)) {
-                        inThinking = true;
-                        thinkingAccum.setLength(0);
-                        thinkingSignature = "";
+                        s.inThinking = true;
+                        s.thinkingAccum.setLength(0);
+                        s.thinkingSignature = "";
                     } else if ("tool_use".equals(type)) {
-                        inToolUse = true;
-                        toolUseId = data.path("content_block").path("id").asText("");
-                        toolUseName = data.path("content_block").path("name").asText("");
-                        toolUseJsonAccum.setLength(0);
+                        s.inToolUse = true;
+                        s.toolUseId = data.path("content_block").path("id").asText("");
+                        s.toolUseName = data.path("content_block").path("name").asText("");
+                        s.toolUseJsonAccum.setLength(0);
                     }
                 }
                 case "content_block_delta" -> {
@@ -190,40 +168,40 @@ public class AnthropicClient extends AbstractStreamingClient {
                     switch (deltaType) {
                         case "thinking_delta" -> {
                             String text = data.path("delta").path("thinking").asText("");
-                            thinkingAccum.append(text);
+                            s.thinkingAccum.append(text);
                             put(queue, new StreamEvent.ThinkingDelta(text));
                         }
                         case "signature_delta" ->
-                                thinkingSignature = data.path("delta").path("signature").asText("");
+                                s.thinkingSignature = data.path("delta").path("signature").asText("");
                         case "text_delta" ->
                                 put(queue, new StreamEvent.TextDelta(data.path("delta").path("text").asText("")));
                         case "input_json_delta" ->
-                                toolUseJsonAccum.append(data.path("delta").path("partial_json").asText(""));
+                                s.toolUseJsonAccum.append(data.path("delta").path("partial_json").asText(""));
                         default -> { /* 其他 delta 类型忽略 */ }
                     }
                 }
                 case "content_block_stop" -> {
-                    if (inThinking) {
-                        put(queue, new StreamEvent.ThinkingComplete(thinkingSignature));
-                        inThinking = false;
+                    if (s.inThinking) {
+                        put(queue, new StreamEvent.ThinkingComplete(s.thinkingSignature));
+                        s.inThinking = false;
                     }
-                    if (inToolUse) {
-                        put(queue, new StreamEvent.ToolCall(toolUseId, toolUseName, toolUseJsonAccum.toString()));
-                        inToolUse = false;
+                    if (s.inToolUse) {
+                        put(queue, new StreamEvent.ToolCall(s.toolUseId, s.toolUseName, s.toolUseJsonAccum.toString()));
+                        s.inToolUse = false;
                     }
                 }
                 case "message_delta" -> {
                     String reason = data.path("delta").path("stop_reason").asText("");
                     if (!reason.isEmpty()) {
-                        stopReason = reason;
+                        s.stopReason = reason;
                     }
-                    outputTokens = data.path("usage").path("output_tokens").asInt(0);
+                    s.outputTokens = data.path("usage").path("output_tokens").asInt(0);
                     // M4（spec F4）：prompt 缓存命中/创建统计
-                    cacheReadTokens = data.path("usage").path("cache_read_input_tokens").asInt(0);
-                    cacheCreationTokens = data.path("usage").path("cache_creation_input_tokens").asInt(0);
+                    s.cacheReadTokens = data.path("usage").path("cache_read_input_tokens").asInt(0);
+                    s.cacheCreationTokens = data.path("usage").path("cache_creation_input_tokens").asInt(0);
                 }
                 case "message_stop" -> put(queue, new StreamEvent.StreamEnd(
-                        stopReason, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens));
+                        s.stopReason, s.inputTokens, s.outputTokens, s.cacheReadTokens, s.cacheCreationTokens));
                 default -> { /* ping 等忽略 */ }
             }
         } catch (Exception e) {

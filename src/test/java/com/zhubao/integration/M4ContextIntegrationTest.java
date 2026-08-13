@@ -26,6 +26,7 @@ import com.zhubao.tool.SerialToolExecutor;
 import com.zhubao.tool.ToolCall;
 import com.zhubao.tool.ToolRegistry;
 import com.zhubao.tool.ToolResult;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -146,6 +147,13 @@ class M4ContextIntegrationTest {
             data: [DONE]
 
             """;
+
+    @BeforeEach
+    void resetClientCache() {
+        // M5（spec F1.3）：工厂按 provider 名缓存复用单例；每个用例新建 mock server（端口不同），
+        // 需清缓存避免复用上一用例的旧 baseUrl 客户端（否则 ConnectException）。
+        LlmClientFactory.resetCache();
+    }
 
     @Test
     void tokenStatsAndCacheAccumulatedAndPersisted() throws Exception {
@@ -317,7 +325,9 @@ class M4ContextIntegrationTest {
             assertEquals(Role.ASSISTANT, h.conversation.getMessages().get(1).getRole());
         }
 
-        // 中断后可继续正常一轮（OpenAI）
+        // 中断后可继续正常一轮（OpenAI）；方法内两次 create 用同名 provider 但不同 server，
+        // 需清工厂缓存避免复用第一个 server 的旧 baseUrl 客户端（M5 F1.3 缓存复用）
+        LlmClientFactory.resetCache();
         try (MockHttpServer server = new MockHttpServer(scriptedOpenAi(List.of(OPENAI_END_SSE)))) {
             LlmClient client = LlmClientFactory.create(openAiProvider(server.baseUrl()));
             AgentRunner.Result r2 = AgentRunner.run(client, h.conversation, "继续", h.specs, h.executor, h.ui, 60);

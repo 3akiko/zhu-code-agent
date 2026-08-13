@@ -45,3 +45,9 @@ context:
   compact_target: 0.6        # 压缩目标水位（压缩后占用应回落到该比例以下）
   snip_enabled: true         # 压缩时是否先做本地瘦身（丢弃空/被拒低价值轮次）
   keep_recent_turns: 8       # 压缩折叠后保留的最近轮数
+
+# ── M5：Subagents / Task ───────────────────────────────
+agent:
+  max_subagent_depth: 2        # 子任务嵌套深度上限（父→子→孙封顶；达上限的子 agent 工具池不再注册 task）
+  max_parallel_subagents: 4    # 并行子任务上限（父一次调用多个 task 的并发数）
+  max_steps_per_subagent: 30   # 单个子任务步数上限（独立于父 max_calls_per_turn）

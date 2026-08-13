@@ -14,7 +14,8 @@ import java.util.Set;
  */
 public final class PlanModeExecutor implements ToolExecutor {
 
-    private static final Set<String> WRITE_TOOLS = Set.of("write_file", "edit_file", "bash");
+    // M5 review 修复（2026-08-13）：/plan 计划阶段必须拦截 task——否则可经子任务绕过只读约束产生副作用
+    private static final Set<String> WRITE_TOOLS = Set.of("write_file", "edit_file", "bash", "task");
 
     private final SerialToolExecutor delegate;
     private final AgentUi ui;
@@ -35,7 +36,7 @@ public final class PlanModeExecutor implements ToolExecutor {
                     ui.onToolCall(call);
                 }
                 ToolResult blocked = ToolResult.error(call,
-                        "计划阶段禁止该操作（write_file/edit_file/bash 不可用，仅只读调研）");
+                        "计划阶段禁止该操作（write_file/edit_file/bash/task 不可用，仅只读调研）");
                 results.add(blocked);
                 if (ui != null) {
                     ui.onToolResult(blocked, previewLines);

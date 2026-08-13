@@ -92,4 +92,20 @@ class PlanModeExecutorTest {
         assertEquals("hello\n", r.get(0).output());
         assertEquals(List.of("read_file"), ui.calls);
     }
+
+    @Test
+    void taskBlockedInPlanMode() {
+        // M5 review：/plan 计划阶段必须拦截 task（否则可经子任务绕过只读约束产生副作用）
+        ToolRegistry registry = new ToolRegistry(new PathGuard(ws), 200);
+        TaskTool taskTool = new TaskTool();
+        taskTool.setRegistry(registry);
+        registry.registerExternal(taskTool);
+        PermissionManager pm = new PermissionManager(registry);
+        Ui ui = new Ui();
+        PlanModeExecutor ex = new PlanModeExecutor(registry, pm, ui, 5);
+        List<ToolResult> r = ex.execute(List.of(call("task", Map.of("prompt", "调研"))));
+        assertEquals(1, r.size());
+        assertTrue(r.get(0).isError());
+        assertTrue(r.get(0).output().contains("计划阶段禁止该操作"), r.get(0).output());
+    }
 }

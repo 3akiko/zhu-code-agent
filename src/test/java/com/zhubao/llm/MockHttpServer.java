@@ -9,6 +9,8 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * 测试用本地 mock HTTP 服务器：捕获每个请求体，交由 handler 写回响应。
@@ -23,14 +25,25 @@ public class MockHttpServer implements AutoCloseable {
     }
 
     private final HttpServer server;
+    private final ExecutorService executor;
     private final List<String> capturedBodies = new CopyOnWriteArrayList<>();
 
     public List<String> capturedBodies() {
         return capturedBodies;
     }
 
+    /**
+     * M5：显式 cached 线程池（daemon）——JDK HttpServer 默认单线程处理请求，
+     * 并发测试（ConcurrentStreamTest）中一个慢 handler 会阻塞其他请求；daemon 保证测试退出不挂。
+     */
     public MockHttpServer(ThrowingHandler handler) throws IOException {
         server = HttpServer.create(new InetSocketAddress(0), 0);
+        executor = Executors.newCachedThreadPool(r -> {
+            Thread t = new Thread(r, "mock-http");
+            t.setDaemon(true);
+            return t;
+        });
+        server.setExecutor(executor);
         server.createContext("/", exchange -> {
             byte[] body = exchange.getRequestBody().readAllBytes();
             capturedBodies.add(new String(body, StandardCharsets.UTF_8));
@@ -60,6 +73,7 @@ public class MockHttpServer implements AutoCloseable {
     @Override
     public void close() {
         server.stop(0);
+        executor.shutdownNow();
     }
 
     public static void writeSse(HttpExchange exchange, String sse) throws IOException {

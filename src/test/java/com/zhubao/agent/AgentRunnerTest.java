@@ -246,4 +246,37 @@ class AgentRunnerTest {
         assertEquals("已中断", r.errorMessage());
         assertEquals(1, h.conversation.messageCount(), "半成品不写入会话，仅保留用户消息");
     }
+
+
+    // ── M5（spec F3.2/F3.10）：子任务执行 ─────────────────────────
+    @Test
+    void runSubtaskRunsInIsolatedConversationAndReturnsText() {
+        Harness h = harness();
+        h.conversation.addUser("子任务：读 a.txt 并总结");
+        StubClient client = new StubClient(List.of(
+                List.of(new StreamEvent.TextDelta("子任务完成"), new StreamEvent.StreamEnd("end_turn", 2, 3))));
+        AgentRunner.Result r = AgentRunner.runSubtask(client, h.conversation, h.specs, h.executor, h.ui,
+                30, AgentRunner.STEP_IDLE_TIMEOUT_MS, null);
+        assertFalse(r.error(), r.errorMessage());
+        assertEquals("子任务完成", r.text());
+        assertEquals(2, r.inputTokens());
+        // 会话：user(任务) + assistant(最终报告)
+        assertEquals(2, h.conversation.messageCount());
+    }
+
+    @Test
+    void runSubtaskStopsAtStepLimit() {
+        Harness h = harness();
+        h.conversation.addUser("子任务：循环工具");
+        // 每一步都返回工具调用；子任务步数上限 1 → 执行 1 步后停止
+        StubClient client = new StubClient(List.of(
+                List.of(new StreamEvent.ToolCall("tu1", "read_file", "{\"path\":\"x.txt\"}"),
+                        new StreamEvent.StreamEnd("tool_use", 1, 1)),
+                List.of(new StreamEvent.ToolCall("tu2", "read_file", "{\"path\":\"y.txt\"}"),
+                        new StreamEvent.StreamEnd("tool_use", 1, 1))));
+        AgentRunner.Result r = AgentRunner.runSubtask(client, h.conversation, h.specs, h.executor, h.ui,
+                1, AgentRunner.STEP_IDLE_TIMEOUT_MS, null);
+        assertTrue(r.limitReached(), "达到子任务步数上限应返回 limitReached");
+        assertFalse(r.error());
+    }
 }

@@ -16,6 +16,8 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -37,8 +39,12 @@ public final class BashTool implements Tool {
 
     private final PathGuard guard;
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    /** 当前正在执行的进程（M4，spec F5：Ctrl+C 工具中断用；串行执行下同一时刻至多一个） */
-    private volatile Process currentProcess;
+    /**
+     * 在途 bash 进程集合（M4 spec F5 中断用；M5 review 修复 2026-08-13）：
+     * 并行 bash（并行子任务各跑 bash / 父+子并发）时多个进程并存，单引用会被覆盖导致
+     * 取消/中断时部分进程泄漏——改为集合，cancel 与中断统一销毁全部在途进程。
+     */
+    private final Set<Process> activeProcesses = ConcurrentHashMap.newKeySet();
 
     public BashTool(PathGuard guard) {
         this.guard = guard;
@@ -77,26 +83,28 @@ public final class BashTool implements Tool {
         } catch (ToolException e) {
             return ToolResult.error(call, "危险命令已拒绝（" + e.getMessage() + "）");
         }
+        Process process = null;
         try {
             ProcessBuilder pb = new ProcessBuilder("/bin/sh", "-c", command);
             pb.directory(guard.root().toFile());
             pb.redirectInput(ProcessBuilder.Redirect.from(new File("/dev/null")));
             pb.redirectErrorStream(true);
-            Process process = pb.start();
-            currentProcess = process;
+            Process p = pb.start();
+            process = p;
+            activeProcesses.add(p);
             try {
                 // 先起线程读输出：避免输出超过管道缓冲区（~64KB）时子进程写满阻塞、waitFor 假超时
-                Future<String> outputFuture = OUTPUT_READER.submit(() -> readOutput(process));
-                boolean finished = process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                Future<String> outputFuture = OUTPUT_READER.submit(() -> readOutput(p));
+                boolean finished = p.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS);
                 if (!finished) {
-                    killTree(process);
+                    killTree(p);
                 }
                 String output = awaitOutput(outputFuture);
                 if (!finished) {
                     return ToolResult.error(call, "命令超时（" + TIMEOUT_SECONDS + "s），已终止"
                             + (output == null || output.isBlank() ? "" : "\n部分输出:\n" + output));
                 }
-                int exit = process.exitValue();
+                int exit = p.exitValue();
                 String text = output;
                 if (exit != 0) {
                     text = (text == null ? "" : text) + "\n（退出码 " + exit + "）";
@@ -104,17 +112,18 @@ public final class BashTool implements Tool {
                 }
                 return ToolResult.ok(call, text == null ? "" : text);
             } finally {
-                currentProcess = null;
+                activeProcesses.remove(p);
             }
         } catch (IOException e) {
             return ToolResult.error(call, "执行命令失败: " + ReadFileTool.safe(e));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            // M4（spec F5）：中断时销毁进程树，避免遗留子进程
-            Process p = currentProcess;
-            if (p != null && p.isAlive()) {
-                killTree(p);
+            // M4（spec F5）+ M5 review：中断时销毁当前进程（inner finally 已从集合移除，引用仍在）
+            // 与全部在途并行进程（级联取消语义），避免遗留子进程。
+            if (process != null && process.isAlive()) {
+                killTree(process);
             }
+            killAll();
             return ToolResult.error(call, "命令执行被中断");
         }
     }
@@ -160,13 +169,19 @@ public final class BashTool implements Tool {
     }
 
     /**
-     * 中断当前正在执行的命令（M4，spec F5）：销毁进程树。
+     * 中断全部在途 bash 命令（M4 spec F5；M5 review：并行 bash 全部销毁）。
      * 调用方（Ctrl+C 信号处理器）会同时 interrupt 执行线程，使 waitFor 快速返回。
      */
     public void cancel() {
-        Process p = currentProcess;
-        if (p != null && p.isAlive()) {
-            killTree(p);
+        killAll();
+    }
+
+    /** 销毁全部在途进程（M5 review 修复：并行 bash 级联取消，单引用会丢失部分进程） */
+    private void killAll() {
+        for (Process p : activeProcesses) {
+            if (p.isAlive()) {
+                killTree(p);
+            }
         }
     }
 
