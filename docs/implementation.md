@@ -232,3 +232,67 @@ AgentRunner（agent 包）          消息循环：stream → 事件累积 → �
 - **P1：rm -rf shell 展开绕过**——静态校验只看字面量，`~/x`、`$HOME/x` 可展开到 cwd 外；新增白名单字符校验，含展开字符的目标直接拒绝。
 - **P2：权限记忆粒度**——「总是允许」按 spec F3 改为文件写按**路径**、bash 按**完整命令串**记忆（此前按完整参数 JSON，同路径改内容会重复询问）。
 - **安全扩展（review 后）**——路径限制从「仅 rm -rf」扩展到所有 `rm`/`rmdir`/`mv`/`cp`（删除/移动/复制目标必须位于工作区内，与 flags 无关；含 shell 展开字符直接拒绝），对齐 Claude Code / Codex 的「工作区边界适用于所有文件系统修改操作」。
+
+
+## M5 Agent 扩展：并行与 Subagents
+
+- 状态：已完成（2026-08-13）
+- 对应归档：`docs/milestones/m5/`
+
+### 实现了什么
+
+- **① 客户端并发安全重构（硬前置）**：`AnthropicClient`/`OpenAiClient` 的流累积状态（token 统计/stopReason/thinking/toolAccums/activeBody/cancelled）从实例字段迁入 **per-call `StreamState`**（基类 + Anthropic/OpenAi 子类）；`AbstractStreamingClient.stream()` 每次调用 new 状态对象、worker 线程写入、cancel 闭包捕获；`LlmClientFactory` 按 provider 名**缓存复用单例**（主会话与子任务共享实例并发 stream）。
+- **② 并行工具执行**：新增 `AbstractToolExecutor`（单调用公共逻辑：权限/快照/执行/结果），`SerialToolExecutor` 继承（行为不变）、`ParallelToolExecutor` 顺序分段——只读工具 ∪ `task` 组段、段内 **Java 21 虚拟线程**并行；write/edit/bash 串行；**结果严格按原调用顺序回填**；单失败不拖垮段；Ctrl+C 中断在途读段。
+- **③ Subagents / Task**：`task` 内置工具（第 7 个）——父 agent ReAct 中调用即派生**独立会话**子任务（内存隔离、不落盘），复用 `AgentRunner.runSubtask` + `SUBTASK_SYSTEM_PROMPT`；**三层护栏**（嵌套深度默认 2（工具池裁剪：深度封顶子 agent 不注册 task）+ 并行子任务上限 4 + 子任务步数上限 30）；**权限继承**（共享父 PermissionManager，父已批准自动放行；未批准回主 UI 确认 + `[子任务#N]` 来源标注 + 全局串行锁一次一弹窗）；**结构化摘要回填**（状态 + 摘要截断 2000 + token，走现有 tool_result 通道，双协议/N3 交替兼容）；**并行子任务**（虚拟线程）；**级联中断**（`SubagentCoordinator.cancelAll()` interrupt 全部在途子任务线程，摘要标记「被中断」）。
+
+### 怎么实现的
+
+**并发架构（M5 核心决策）：**
+
+```
+stream() 每次调用:
+  StreamState state = newStreamState();        // per-call：token/stopReason/thinking/toolAccums/activeBody/cancelled
+  Thread worker = new Thread(runStream(...));   // 后台消费 SSE 入队
+  return new LlmStream(queue, cancel闭包, join闭包); // 句柄：事件队列 + 取消 + 等待
+
+LlmClientFactory.create(name) → ConcurrentHashMap 缓存复用单例
+
+ParallelToolExecutor.execute(calls):
+  [R1,R2, W1, R3] → 并行段(R1,R2) 虚拟线程 → W1 串行 → 并行段(R3)
+  UI 回调只在调度线程串行调（提交前 onToolCall / 收集后 onToolResult）
+  AgentDepth 显式传播（虚拟线程不继承 ThreadLocal）→ 嵌套子任务深度正确
+
+TaskTool.execute:
+  深度检查 → 并行计数 → 独立 Conversation → SubagentUi(静默) →
+  SubagentCoordinator.register → AgentRunner.runSubtask → 摘要回填 → unregister
+```
+
+**关键机制：**
+
+- **per-call 状态 vs ThreadLocal**：选 per-call 状态对象（业界一致：Claude AsyncLocalStorage / Codex 所有权）——cancel 跨线程需外部访问、闭包可捕获、实例复用不串；ThreadLocal 绑定线程且无法被 cancel 闭包访问。
+- **深度传播**：并行段虚拟线程不继承 ThreadLocal，`AgentDepth`（静态 ThreadLocal）在提交前捕获父线程深度、线程内恢复，使「子任务内再派 task」读到正确深度（工具池裁剪 + 运行时兜底拒绝）。
+- **并行 bash 进程管理**：`BashTool` 用并发集合 `activeProcesses` 管理在途进程，cancel/中断统一销毁全部（单引用在并行下会覆盖丢失）。
+- **终端输出收敛**：UI 回调调度线程串行 + `TerminalUi` 输出锁 + 子任务静默折叠单行——「执行并行、汇报串行、细节折叠」。
+- **权限**：并行段天然无弹窗（只读自动放行 + task 不确认）；子任务权限回主 UI + `ReentrantLock` 全局串行（一次一弹窗）；权限继承（alwaysAllowed 共享）。
+
+### 与 Claude Code / Codex 的对比
+
+| 维度 | zhuCodeAgent（M5） | Claude Code / Codex |
+|------|--------------------|--------------------|
+| 客户端并发 | per-call 状态持有者 + 实例缓存复用 | AsyncLocalStorage（Node）/ 所有权（Rust） |
+| 并行工具执行 | 读段虚拟线程并行 / 写·bash 串行 / 保序 | coordinator 模式「写按文件集串行、研究可并行」 |
+| Subagents | `task` 工具派生子任务：独立会话/权限继承/三层护栏/工具池裁剪/摘要回填/并行/级联中断 | `AgentTool`/`Task` 工具：sidechain 独立 transcript + task-notification 摘要回填；Codex `spawn_agent` 独立 session + final message |
+| 嵌套护栏 | 深度上限（工具池裁剪 + 运行时拒绝）+ 并行上限 + 步数上限 | teammate 禁止嵌套 teammate（CC）/ agent_max_depth + spawn slots（Codex） |
+| 权限 | 子任务回主 UI 统一确认 + 来源标注 + 串行锁 + 继承 | leader permission bridge（CC）/ 权限桥接 |
+
+**取舍说明**：M5 聚焦「多 agent 并行」闭环——先修并发安全硬前置，再做并行工具（接口不变、安全不削弱），最后 Subagents（独立会话 + 护栏 + 摘要回填 + 级联中断）。不做 MCP/Hooks/Skills（M6）、OS 沙箱（M7）、子任务可展开全文（M8+ 候选）；子任务不落盘（仅内存 + 摘要进父会话）。
+
+### 踩坑记录（M5）
+
+1. **客户端并发是硬前置**：未重构 per-call 状态前并行会数据竞争——先修 `StreamState` 再做并行/子任务。
+2. **ThreadLocal 深度跨虚拟线程丢失**：`newVirtualThreadPerTaskExecutor` 每任务新线程不继承 ThreadLocal → 嵌套子任务深度护栏失效（孙 agent 工具池仍含 task）。→ 用 `AgentDepth` 显式传播。
+3. **/plan 可经 task 绕过只读**：`PlanModeExecutor` 拦截集不含 task，计划阶段可派子任务改写工作区（M3 回归）→ 拦截集加 task。
+4. **并行 bash 进程泄漏**：`BashTool` 单 `currentProcess` 引用在并行下被覆盖，cancel 只销毁最后一个 → 并发集合管理。
+5. **真机权限弹窗后 Ctrl+C 退出进程**：JLine `readLine`（权限弹窗）临时接管 SIGINT、结束后可能恢复为默认 → 弹窗结束后 `rearmSignalHandler()` 重新注册本轮 handler。
+6. **工具摘要与流式正文粘连**：模型先输出正文再调工具时 `🔧` 摘要接在同一行 → `textOpen` 标志 + 打印前先换行。
+7. **测试隔离（工厂缓存）**：集成测试每用例新建 mock server（端口不同），`LlmClientFactory` 缓存复用会串 baseUrl → 测试 `@BeforeEach resetCache()`；`MockHttpServer` 需显式线程池（JDK HttpServer 默认单线程会阻塞并发请求）。

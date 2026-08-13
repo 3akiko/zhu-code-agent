@@ -2,7 +2,7 @@
 
 用 Java 从零实现的一个命令行 Coding Agent（对标 Claude Code / Codex），用于学习 agent 核心机制与 agent 开发面试。
 
-> **状态：M4 已完成**（上下文管理与稳定性：token 统计/占用告警/自动压缩/prompt 缓存/流式中断/会话 JSONL/max_tokens 可配置化，2026-08-12）。里程碑规划见 [docs/roadmap.md](docs/roadmap.md)。
+> **状态：M5 已完成**（并行与 Subagents：客户端并发安全 per-call 状态 + 实例缓存复用、并行工具执行（读并行·写串行·保序）、Subagents/Task 子任务（独立会话·权限继承·护栏·摘要回填·级联中断），2026-08-13）。里程碑规划见 [docs/roadmap.md](docs/roadmap.md)。
 
 ## 当前功能
 
@@ -73,6 +73,11 @@ java -jar target/zhu-code-agent.jar                  # 直接进入聊天
   思考过程会像 Claude 一样灰色实时滚动，正文正常颜色（2026-08-07 真实 API 验证通过）。
 - Anthropic 暂无密钥可先不配置 claude 项；拿到密钥后补上 `api_key: ${ANTHROPIC_API_KEY}` 即可。
 
+
+- **客户端并发安全（M5）**：LLM 客户端流累积状态改为 **per-call 状态持有者**（`StreamState`），同一实例可并发 `stream()`、可复用；`LlmClientFactory` 按 provider 名**缓存复用单例**（主会话与子任务共享实例并发流）
+- **并行工具执行（M5）**：只读工具（read_file/grep/glob）+ `task` 归**并行段**（Java 21 虚拟线程段内并行）、write/edit/bash 串行；**结果严格按原调用顺序回填**；单工具失败不拖垮段；Ctrl+C 中断在途读段
+- **Subagents / Task（M5）**：父 agent 通过 `task` 工具自主派生子任务——独立会话（内存隔离、不落盘）、权限继承（父已批准自动放行、未批准回主 UI 确认并标注 `[子任务#N]`）、三层护栏（嵌套深度 2 / 并行 4 / 步数 30，深度封顶子 agent 工具池裁剪 task）、结构化摘要回填（状态+摘要截断+token）、**并行子任务**、Ctrl+C **级联中断**（子任务标记「被中断」）；`agent:` 配置见 [config.example.yml](config.example.yml)
+
 ## 使用示例
 
 ```
@@ -116,9 +121,9 @@ src/main/java/com/zhubao/
 ├── Main.java              # 入口：--config 解析、退出码
 ├── config/                # YAML 配置：providers 六字段 + tool/ui 配置 + api_key 三级解析
 ├── conversation/          # 对话历史：Message 内容块(text/tool_use/tool_result) / Conversation / Role
-├── llm/                   # LlmClient 接口 + Anthropic/OpenAI 实现 + SseParser + StreamEvent
-├── agent/                 # AgentRunner 消息循环（普通 run / 计划 runPlan / 批准后执行 runExecution）
-├── tool/                  # 工具抽象 + 6 内置工具 + PathGuard/DangerGuard + SerialToolExecutor/PlanModeExecutor
+├── llm/                   # LlmClient 接口 + Anthropic/OpenAI 实现（per-call StreamState）+ SseParser + StreamEvent + 工厂缓存复用
+├── agent/                 # AgentRunner 消息循环（普通/计划/执行/子任务 runSubtask）+ AgentDepth + SubagentCoordinator
+├── tool/                  # 工具抽象 + 7 内置工具（含 task）+ PathGuard/DangerGuard + Abstract/Serial/ParallelToolExecutor + PlanModeExecutor
 ├── permission/            # 权限判定 + 三档模式（normal / acceptEdits / bypassPermissions）
 ├── diff/                  # DiffGenerator（write/edit 结果内嵌轻量行 diff）
 ├── history/               # FileHistory 检查点快照 + /undo /rewind 回滚
@@ -133,14 +138,14 @@ src/main/java/com/zhubao/
 mvn test    # 单元测试 + mock HTTP 集成测试（不依赖真实密钥）
 ```
 
-覆盖：配置解析、SSE 解析、双协议流式客户端、thinking 多轮回传、会话存取、端到端流式链路、6 工具与路径/危险命令守卫、权限判定与三档模式、diff 生成、快照回滚（undo/rewind 跨会话）、/plan 计划循环、mock LLM 端到端（M2 工具闭环 + M3 计划批准/拒绝/权限模式）、**M4 上下文管理（token 统计/占用协议感知/告警/压缩/中断/JSONL/逃生门）**。当前 **215 个测试全绿**；真机验证见 [docs/demo-M4上下文管理.md](docs/demo-M4上下文管理.md) 与 [docs/demo-M3文件编辑与PlanMode.md](docs/demo-M3文件编辑与PlanMode.md)。
+覆盖：配置解析、SSE 解析、双协议流式客户端、thinking 多轮回传、会话存取、端到端流式链路、7 工具与路径/危险命令守卫、权限判定与三档模式、diff 生成、快照回滚（undo/rewind 跨会话）、/plan 计划循环、mock LLM 端到端（M2 工具闭环 + M3 计划批准/拒绝/权限模式）、**M4 上下文管理（token 统计/占用协议感知/告警/压缩/中断/JSONL/逃生门）**、**M5 并行与 Subagents（客户端并发安全/并行工具执行/子任务端到端/护栏/权限继承/级联中断）**。当前 **245 个测试全绿**；真机验证见 [docs/demo-M5并行与Subagents.md](docs/demo-M5并行与Subagents.md)、[docs/demo-M4上下文管理.md](docs/demo-M4上下文管理.md) 与 [docs/demo-M3文件编辑与PlanMode.md](docs/demo-M3文件编辑与PlanMode.md)。
 
 ## 相关文档
 
 - [Roadmap / 里程碑与对比表](docs/roadmap.md)
-- 里程碑归档：[M1](docs/milestones/m1/) · [M2](docs/milestones/m2/) · [M3](docs/milestones/m3/) · [M4](docs/milestones/m4/)
-- 验收报告：[M1](docs/验收报告-M1.md) · [M2](docs/验收报告-M2.md) · [M3](docs/验收报告-M3.md) · [M4](docs/验收报告-M4.md)
-- 真机 Demo：[M2 工具执行](docs/demo-M2工具执行.md) · [M3 文件编辑与 Plan Mode](docs/demo-M3文件编辑与PlanMode.md) · [M4 上下文管理](docs/demo-M4上下文管理.md)
+- 里程碑归档：[M1](docs/milestones/m1/) · [M2](docs/milestones/m2/) · [M3](docs/milestones/m3/) · [M4](docs/milestones/m4/) · [M5](docs/milestones/m5/)
+- 验收报告：[M1](docs/验收报告-M1.md) · [M2](docs/验收报告-M2.md) · [M3](docs/验收报告-M3.md) · [M4](docs/验收报告-M4.md) · [M5](docs/验收报告-M5.md)
+- 真机 Demo：[M5 并行与 Subagents](docs/demo-M5并行与Subagents.md) · [M2 工具执行](docs/demo-M2工具执行.md) · [M3 文件编辑与 Plan Mode](docs/demo-M3文件编辑与PlanMode.md) · [M4 上下文管理](docs/demo-M4上下文管理.md)
 - DeepSeek 双协议对比样例：[docs/DeepSeek-OpenAI-vs-Anthropic/](docs/DeepSeek-OpenAI-vs-Anthropic/README.md)
 - [实现记录与 Claude Code/Codex 对比](docs/implementation.md)
 - [待办与技术债](docs/TODO.md)

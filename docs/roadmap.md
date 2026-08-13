@@ -1,7 +1,7 @@
 状态：approved
 # zhuCodeAgent 路线图（Roadmap）
 
-> 最后更新：2026-08-12（M4 已完成：token 统计/占用（协议感知含缓存）/告警/双层自动压缩/prompt 缓存/流式中断/会话 JSONL/max_tokens 可配置化 + 优雅关闭；特性对比表新增 M4 列；M8+ 记录「/rewind /undo 回滚记录连续 user」待修项）
+> 最后更新：2026-08-13（M5 已完成：客户端并发安全 per-call 状态 + 实例缓存复用 / 并行工具执行（读并行·写串行·保序，虚拟线程）/ Subagents-Task（独立会话·权限继承·护栏·摘要回填·级联中断）；特性对比表新增 M5 列；M8+ 记录「/rewind /undo 回滚记录连续 user」待修项 +「子任务结果可展开全文」候选）
 > 本文件是产品级地图：里程碑、优先级、扩展清单、与主流 Coding Agent 的对比追踪。
 > 每个里程碑的详细需求/设计/任务/验收分别落在 `docs/spec.md` / `docs/plan.md` / `docs/task.md` / `docs/checklist.md`（四文档流程，见文末「文档与记录规范」）。
 
@@ -21,13 +21,13 @@
 
 ## 3. 里程碑总览
 
-| 里程碑 | 名称 | 优先级 | 一句话目标 | 状态 |
-|--------|------|--------|-----------|------|
+  里程碑   名称   优先级   一句话目标   状态  
+ -------- ------|--------|-----------|------|
 | M1 | 聊天 TUI + 会话持久化 | P0 | 彩色终端 TUI + 流式输出 + 多轮记忆 + 双后端 + extended thinking + 会话落盘/恢复 | ✅ 已完成（2026-08-07） |
 | M2 | Agent 循环与 Tool Use | P0 | 模型输出工具调用 → 执行内置工具 → 结果回填循环，含权限确认 | ✅ 已完成（2026-08-08） |
 | M3 | 文件编辑增强与 Plan Mode | P0 | diff 展示、/plan 先计划后执行、文件快照回滚、权限模式 | ✅ 已完成（2026-08-09） |
 | M4 | 上下文管理与稳定性 | P0 | token 统计/上限告警/自动压缩/prompt 缓存 + 流式中断 + 会话 JSONL + max_tokens 可配置化/优雅关闭 | ✅ 已完成（2026-08-12） |
-| M5 | Agent 扩展：并行与 Subagents | P0 | 客户端并发安全重构 → 并行工具执行 → Subagents/Task 子任务 | 未开始 |
+| M5 | Agent 扩展：并行与 Subagents | P0 | 客户端并发安全重构 → 并行工具执行 → Subagents/Task 子任务 | ✅ 已完成（2026-08-13） |
 | M6 | 生态集成：MCP / Hooks / Skills | P1 | MCP 协议接入 + 生命周期 Hooks + 可安装技能包 | 未开始 |
 | M7 | 安全纵深与工程化 | P1 | OS 级沙箱 + 权限记忆跨会话落盘 + git 集成 + 结构化日志 | 未开始 |
 | M8+ | 扩展特性 | P2 | 见「扩展清单」 | 未开始 |
@@ -68,7 +68,7 @@
 - **不做**：并行工具/Subagents（M5）、MCP/Hooks/Skills（M6）、OS 沙箱（M7）；`-p` 非交互与结构化输出容错后置 M8+（2026-08-10 范围调整）。
 - **验收入口**：M4 的 `docs/spec.md`。
 
-### M5 Agent 扩展：并行与 Subagents（P0）
+### M5 Agent 扩展：并行与 Subagents（P0）✅ 已完成（2026-08-13）
 - **目标**：从"单 agent 串行"升级为"多 agent 并行"——技术说服力最强的里程碑，面试重点。
 - **包含**：
   - ① 客户端并发安全重构：AnthropicClient / OpenAiClient 的流累积状态改为 per-call 持有者（Subagents 与并行工具执行的**硬前置**，TODO 已记）
@@ -111,23 +111,24 @@
 - git worktree 隔离工作区（对标 Codex 的 worktree 模式：临时分支工作区 + 权限/快照按工作区根隔离，安全隔离 + git 深度结合）。
 - 长期记忆机制（对标 Claude Code 的 CLAUDE.md + Memory tool / Codex 的 AGENTS.md + Memories）：项目级持久指令文件 + 跨会话摘要沉淀与按需注入（M4 的压缩摘要是现成素材；2026-08-10 S1 讨论后列为候选）。
 - 回滚记录消息格式修正（N3 加固）：**`/undo` 与 `/rewind` 共用 `ChatApp.renderRollback`，都会以 user 角色写入「[回滚] …」记录**（`conversation.addUser`）；当前行为：**`/undo` / `/rewind` 只回退文件内容（恢复检查点内容、删除新建文件），对话留痕**——JSONL 会话消息不回退、只追加「[回滚] …」记录，紧接着提问会出现**连续 user 消息**，违反 spec N3，Anthropic 严格端点/代理可能 `400 roles must alternate`（M4 demo 会话 `20260811-234252-a2dc.jsonl` [26][27] 实测，2026-08-12 记录）。方案：① 语义修正——[回滚] 记录**合入下一条真实 user 消息**（或按上一消息角色补位），保证 user/assistant 交替；② 防御兜底——`AnthropicClient.buildMessages` 增加**连续同角色合并**，任何来源的连续消息发请求前归一化为交替格式。
+- 子任务结果可展开全文（M5 S1 评估记录，2026-08-12）：Task 子任务完成后默认只回填结构化摘要（状态 + 最终文本摘要截断 + token 用量）；后续演进为父 agent 可请求展开子任务完整 transcript / 最终回复全文（需保留子历史引用 + 二次查询通道 + 展开内容进父上下文的压缩协同；对标 Claude Code 继续已有 subagent 的 SendMessage/resume）。M5 不做，列为候选。
 
 ## 5. 特性对比表（随实现更新）
 
-> 现状 = M4 已完成（2026-08-12）。每完成一个里程碑回填一列并标注完成日期。M5–M8+ 为规划目标，见「4. 里程碑详情」。
+> 现状 = M5 已完成（2026-08-13）。每完成一个里程碑回填一列并标注完成日期。M6–M8+ 为规划目标，见「4. 里程碑详情」。
 
-| 功能维度 | zhuCodeAgent（M1） | zhuCodeAgent（M2，2026-08-08） | zhuCodeAgent（M3，2026-08-09） | zhuCodeAgent（M4，2026-08-12） | Claude Code | Codex CLI |
+| 功能维度 | zhuCodeAgent（M1） | zhuCodeAgent（M2，2026-08-08） | zhuCodeAgent（M3，2026-08-09） | zhuCodeAgent（M4，2026-08-12） | zhuCodeAgent（M5，2026-08-13） | Claude Code | Codex CLI |
 |----------|---------------------|------------------------------|------------------------------|------------------------------|-----------|------------|
 | 交互界面 | ✅ 已完成（M1）：JLine3+ANSI 彩色 TUI | ✅ 沿用 M1（每 agent 步骤状态行） | ✅ 沿用 M2 | ✅ 沿用 M3（完成行统计/告警行，斜杠命令扩充 /compact） | Ink(React) 全屏 TUI | 类 TUI + 状态行 |
 | 流式输出 | ✅ 已完成（M1）：SSE 增量实时打印 | ✅ 沿用 M1 | ✅ 沿用 M1 | ✅ 沿用 M1（新增 Ctrl+C 流式中断） | 有 | 有 |
 | 多后端 | ✅ 已完成（M1）：anthropic / openai | ✅ 沿用 M1 | ✅ 沿用 M1 | ✅ 沿用 M1（DeepSeek 双格式直连） | Anthropic 为主 | OpenAI 为主 |
 | extended thinking | ✅ 已完成（M1）：灰色小字展示 + 多轮回传 | ✅ 沿用 M1 | ✅ 沿用 M1 | ✅ 沿用 M1 | 有（可展开） | 有（reasoning） |
-| 工具调用 | 未做 | ✅ 已完成：6 内置工具 + Agent 循环 + 双协议 | ✅ 沿用 M2 | ✅ 沿用 M2 | 有 | 有 |
-| 权限控制 | 未做 | ✅ 部分：只读自动 + 写类/bash 行内确认 + 总是允许（内存） | ✅ 三档模式：normal / acceptEdits / bypassPermissions（危险命令仍强制确认，红线不削弱） | ✅ 沿用 M3 | 有（plan/acceptEdits/bypass） | 有（plan/auto） |
+| 工具调用 | 未做 | ✅ 已完成：6 内置工具 + Agent 循环 + 双协议 | ✅ 沿用 M2 | ✅ 沿用 M2 | ✅ 并行执行（读段虚拟线程并行/写·bash 串行/保序；tool + task 归并行段） | 有 | 有 |
+| 权限控制 | 未做 | ✅ 部分：只读自动 + 写类/bash 行内确认 + 总是允许（内存） | ✅ 三档模式：normal / acceptEdits / bypassPermissions（危险命令仍强制确认，红线不削弱） | ✅ 沿用 M3 | ✅ 并行确认串行化（全局锁一次一弹窗）+ 子任务权限回主 UI（来源标注）+ 父已批准继承不二次确认 | 有（plan/acceptEdits/bypass） | 有（plan/auto） |
 | diff 展示 / undo 回滚 | 未做 | 未做（留 M3） | ✅ diff 内嵌彩色展示 + 全量快照 /undo /rewind（跨会话） | ✅ 沿用 M3 | 有（FileSnapshotService 快照） | diff 高亮；回滚靠 git |
 | 会话恢复 | ✅ 已完成（M1）：启动选择恢复 | ✅ 工具消息随会话落盘，恢复后循环上下文完整 | ✅ 沿用 M2（快照按会话隔离） | ✅ JSONL 追加写 + 会话累计随 meta 恢复 | 有（--resume/--continue） | 有（--resume/--continue） |
-| 上下文管理 | 未做 | 未做 | 未做（M4 规划） | ✅ M4 已完成：token 统计/占用%（**协议感知含缓存**：Anthropic input+cacheRead、OpenAI prompt_tokens）/上限告警/双层渐进压缩（snip 瘦身 + LLM 摘要折叠）/自动 + 手动 /compact/熔断/prompt 缓存（cache_control 断点 + 双协议命中展示）/流式中断 | 有：四层渐进压缩（snip → microcompact → context collapse → auto-compact，含 cache-aware 决策）+ /compact + prompt 缓存 | 有：auto-compact 默认开（可配 model_context_window / model_auto_compact_token_limit）+ /compact + 状态行剩余上下文 |
-| MCP / Subagents / Hooks / Skills | 未做 | 未做 | 未做 | 未做（M5 Subagents / M6 MCP·Hooks·Skills 规划） | 有（MCP + subagents + hooks + skills） | 有（MCP client + subagents + hooks + skills，2026 起 GA） |
+| 上下文管理 | 未做 | 未做 | 未做（M4 规划） | ✅ M4 已完成：token 统计/占用%（**协议感知含缓存**：Anthropic input+cacheRead、OpenAI prompt_tokens）/上限告警/双层渐进压缩（snip 瘦身 + LLM 摘要折叠）/自动 + 手动 /compact/熔断/prompt 缓存（cache_control 断点 + 双协议命中展示）/流式中断 | ✅ 沿用 M4（子任务摘要经 tool_result 回填进父会话，占用/压缩兼容） | 有：四层渐进压缩（snip → microcompact → context collapse → auto-compact，含 cache-aware 决策）+ /compact + prompt 缓存 | 有：auto-compact 默认开（可配 model_context_window / model_auto_compact_token_limit）+ /compact + 状态行剩余上下文 |
+| MCP / Subagents / Hooks / Skills | 未做 | 未做 | 未做 | 未做（M5 Subagents / M6 MCP·Hooks·Skills 规划） | ✅ Subagents：task 工具派生子任务（独立会话/权限继承/三层护栏/工具池裁剪/摘要回填/并行子任务/级联中断）；MCP/Hooks/Skills 未做（M6） | 有（MCP + subagents + hooks + skills） | 有（MCP client + subagents + hooks + skills，2026 起 GA） |
 | OS 级沙箱 | 未做 | 未做 | 未做 | 未做（M7 规划：macOS Seatbelt） | 无原生 OS 沙箱（权限确认 + 快照回滚） | 有（read-only / workspace-write / danger-full-access：macOS Seatbelt / Linux Landlock+Bubblewrap） |
 | 技术栈 | Java 21 | Java 21（同左） | Java 21（同左） | Java 21（同左） | TypeScript/Node | Rust |
 
