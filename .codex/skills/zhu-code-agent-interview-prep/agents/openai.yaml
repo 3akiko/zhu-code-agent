@@ -1,0 +1,4 @@
+interface:
+  display_name: "面试问答整理与同步"
+  short_description: "整理/口语化项目面试问答并同步到 Notion 简历分析页与 docs/resume.md、面试题库"
+  default_prompt: "帮我整理面试问答并同步到 Notion 和简历文档"
