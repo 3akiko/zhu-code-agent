@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### Fixed（2026-09-18：会话/Provider 选择列表在受限终端下重复堆叠）
+- `JLinePicker` 重绘改用 JLine 官方 `Display`（按终端能力选择重绘策略、按实际渲染行数含软换行维护区域），替代原先直接写 `System.out` 的手写 ANSI 光标序列（`\u001b[NA` + `\u001b[J`）——后者在不支持光标控制的终端（DumbTerminal / `TERM=dumb` / 受限 PTY）下失效，导致每次按 ↑/↓ 追加一份完整列表（屏幕重复堆叠）；行数硬算"每项一行"在长标题软换行后也会上移不足。
+- 渲染改用 `AttributedString`（保留颜色 + 按显示宽度排版，中文/emoji 宽字符不再算错）；按键读取改用 `BindingReader` + `KeyMap`，方向键同时绑定普通模式（`\u001b[A/B`）与应用模式（`\u001bOA/OB`）+ terminfo 能力序列，并在进入/退出时管理 keypad 模式（不再手写 ESC 序列解析）。
+- 验证：PTY 自动化（四种箭头序列均识别、每次按键仅差异更新且标题不再重复、Enter 正常进入下一步）+ 全量 245 测试全绿。
+
+
 ## [Unreleased]
 
 ### Added（M5：并行与 Subagents，2026-08-13）

@@ -51,7 +51,7 @@
 
 ## M6 起接手（2026-09-10 记录）
 
-- [ ] **会话/Provider 选择列表在受限终端下重复堆叠**（→ **M6**）：2026-09-10 复现——`JLinePicker` 重绘用手写 ANSI 序列（`\u001b[NA` 上移 + `\u001b[J` 清屏）直接写 `System.out`，绕过了 JLine 的终端能力判断；在不支持光标控制的终端（DumbTerminal / `TERM=dumb` / 受限 PTY）下序列失效 → 每次按 ↑/↓ 都追加一份完整列表（屏幕重复堆叠）；行数按"每项一行"硬算，长标题软换行后上移不足。
-  - **修复方案（已实现并验证，为面试前稳定性暂缓合入，待 M6 重新应用）**：重绘改用 JLine 官方 `Display`（按终端能力选择重绘策略、按实际渲染行数含软换行维护区域）；渲染改用 `AttributedString`（保留颜色 + 正确显示宽度）；按键读取改用 `BindingReader` + `KeyMap`，方向键同时绑定普通模式（`\u001b[A/B`）与应用模式（`\u001bOA/OB`）+ terminfo 能力序列，进入/退出时管理 keypad 模式。
-  - **验证证据**：PTY 自动化脚本（四种箭头序列均正确识别、每次按键仅差异更新且标题不再重复、Enter 正常进入下一步）+ 全量 245 测试全绿。改动已回滚，需在 M6 重新应用后重跑验证。
+- [x] **会话/Provider 选择列表在受限终端下重复堆叠**（2026-09-18 修复，分支 `codex/fix-session-picker-redraw`）：2026-09-10 复现——`JLinePicker` 重绘用手写 ANSI 序列（`\u001b[NA` 上移 + `\u001b[J` 清屏）直接写 `System.out`，绕过了 JLine 的终端能力判断；在不支持光标控制的终端（DumbTerminal / `TERM=dumb` / 受限 PTY）下序列失效 → 每次按 ↑/↓ 都追加一份完整列表（屏幕重复堆叠）；行数按"每项一行"硬算，长标题软换行后上移不足。
+  - **修复（已合入）**：重绘改用 JLine 官方 `Display`（按终端能力选择重绘策略、按实际渲染行数含软换行维护区域）；渲染改用 `AttributedString`（保留颜色 + 正确显示宽度）；按键读取改用 `BindingReader` + `KeyMap`，方向键同时绑定普通模式（`\u001b[A/B`）与应用模式（`\u001bOA/OB`）+ terminfo 能力序列，进入/退出时管理 keypad 模式。
+  - **验证证据**：PTY 自动化脚本（四种箭头序列 `\u001bOA/OB`、`\u001b[A/B` 均正确识别、每次按键仅差异更新且标题不再重复、Enter 正常进入下一步）+ 全量 **245/245 测试全绿**（无其他功能回归）。
   - **关联文件**：`src/main/java/com/zhubao/tui/JLinePicker.java`；同类手写 ANSI 输出（`TerminalUi.clearPreviousLine` / `clearScreen`）建议一并审计终端能力适配。
